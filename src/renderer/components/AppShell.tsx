@@ -124,10 +124,7 @@ export function AppShell({
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sharedTerminalOpen, setSharedTerminalOpen] = useState(false);
-  const [sharedTerminalHeight, setSharedTerminalHeight] = useState(() => {
-    const saved = Number(localStorage.getItem("pi-shared-terminal-height"));
-    return Number.isFinite(saved) && saved >= 240 ? saved : Math.round(window.innerHeight * 0.38);
-  });
+  const [sharedTerminalHeight, setSharedTerminalHeight] = useState(260);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
 
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
@@ -1149,10 +1146,6 @@ export function AppShell({
                     window.removeEventListener("pointerup", stop);
                     document.body.style.cursor = "";
                     document.body.style.userSelect = "";
-                    setSharedTerminalHeight((height) => {
-                      localStorage.setItem("pi-shared-terminal-height", String(Math.round(height)));
-                      return height;
-                    });
                   };
                   document.body.style.cursor = "row-resize";
                   document.body.style.userSelect = "none";
