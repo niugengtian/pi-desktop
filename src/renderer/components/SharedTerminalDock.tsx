@@ -60,51 +60,36 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
         .catch(() => copyText(selection))
         .catch(showError);
     };
+    const pasteText = () => {
+      void window.piBridge
+        .readClipboardText()
+        .then((text) => (text ? call("sharedTerminal.write", { sessionId, data: text }) : undefined))
+        .catch(showError);
+    };
     const handleContextMenu = (event: MouseEvent) => {
       if (!terminal.hasSelection()) return;
       event.preventDefault();
       copySelection();
     };
-    const handleCopy = (event: ClipboardEvent) => {
-      const selection = terminal.getSelection();
-      if (!selection || !event.clipboardData) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.clipboardData.setData("text/plain", selection);
-    };
     const handlePaste = (event: ClipboardEvent) => {
       const text = event.clipboardData?.getData("text/plain") ?? "";
       if (!text) return;
       event.preventDefault();
-      event.stopPropagation();
       void call("sharedTerminal.write", { sessionId, data: text }).catch(showError);
     };
     mount.addEventListener("contextmenu", handleContextMenu);
-    mount.addEventListener("copy", handleCopy, true);
-    mount.addEventListener("paste", handlePaste, true);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!event.metaKey) return;
-      const key = event.key.toLowerCase();
-      if (key === "c" && terminal.hasSelection()) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        copySelection();
-      }
-      if (key === "v") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        void navigator.clipboard
-          ?.readText()
-          .then((text) => (text ? call("sharedTerminal.write", { sessionId, data: text }) : undefined))
-          .catch(showError);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
+    mount.addEventListener("paste", handlePaste);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown" || !event.metaKey) return true;
       const key = event.key.toLowerCase();
-      if (key === "c" && terminal.hasSelection()) return false;
-      if (key === "v") return false;
+      if (key === "c") {
+        if (terminal.hasSelection()) copySelection();
+        return false;
+      }
+      if (key === "v") {
+        pasteText();
+        return false;
+      }
       return true;
     });
     const disposables = [
@@ -141,10 +126,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       disposed = true;
       unsubscribe.forEach((item) => item());
       observer.disconnect();
-      window.removeEventListener("keydown", handleKeyDown, true);
       mount.removeEventListener("contextmenu", handleContextMenu);
-      mount.removeEventListener("copy", handleCopy, true);
-      mount.removeEventListener("paste", handlePaste, true);
+      mount.removeEventListener("paste", handlePaste);
       disposables.forEach((item) => item.dispose());
       terminal.dispose();
       terminalRef.current = null;

@@ -131,6 +131,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): void {
     if (typeof text !== "string" || text.length > 1024 * 1024) throw new Error("Invalid clipboard text");
     clipboard.writeText(text);
   });
+  trustedHandle("desktop:clipboard-read-text", () => clipboard.readText().slice(0, 1024 * 1024));
   trustedHandle("desktop:update:get-state", () => updateManager.getState());
   trustedHandle("desktop:update:check", () => updateManager.checkForUpdates());
   trustedHandle("desktop:update:download", () => updateManager.downloadUpdate());

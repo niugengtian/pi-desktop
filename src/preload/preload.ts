@@ -71,6 +71,7 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
     openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
     showItemInFolder: (fsPath) => ipcRenderer.invoke("desktop:show-item-in-folder", fsPath),
     writeClipboardText: (text) => ipcRenderer.invoke("desktop:clipboard-write-text", text),
+    readClipboardText: () => ipcRenderer.invoke("desktop:clipboard-read-text"),
     showFileContextMenu: (request) => ipcRenderer.invoke("desktop:file-context-menu", request),
     inspectLocalFiles: (request) => ipcRenderer.invoke("desktop:inspect-local-files", request),
     getPathForFile: (file: File) => (webUtils ? webUtils.getPathForFile(file) : null),

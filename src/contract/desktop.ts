@@ -149,6 +149,7 @@ export interface PiBridge {
   openExternal: (url: string) => Promise<void>;
   showItemInFolder: (fsPath: string) => Promise<void>;
   writeClipboardText: (text: string) => Promise<void>;
+  readClipboardText: () => Promise<string>;
   /** Show the app's rich file context menu after main-process path validation. */
   showFileContextMenu: (request: ShowFileContextMenuRequest) => Promise<ShowFileContextMenuResult>;
   inspectLocalFiles: (request: InspectLocalFilesRequest) => Promise<LocalFileInspection[]>;
