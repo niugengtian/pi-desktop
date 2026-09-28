@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Rebuild native terminal module for Electron
+        run: npx electron-builder install-app-deps --arch arm64
+
       - name: Build application
         run: npm run build
 
@@ -53,6 +56,10 @@ jobs:
           test -d "$app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "app.dlyzzt.pi-agent-desktop"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$app/Contents/Info.plist")" = "Pi Agent Desktop"
+          asar="$app/Contents/Resources/app.asar"
+          test -f "$asar"
+          npx asar list "$asar" | grep -q '/node_modules/node-pty/package.json'
+          npx asar list "$asar" | grep -Eq '/node_modules/node-pty/.*/pty\.node|/node_modules/node-pty/build/Release/pty\.node'
           test -n "$(find dist -maxdepth 1 -type f -name 'Pi-Agent-Desktop-*-arm64.dmg' -print -quit)"
           test -n "$(find dist -maxdepth 1 -type f -name 'Pi-Agent-Desktop-*-arm64.zip' -print -quit)"
           shasum -a 256 dist/Pi-Agent-Desktop-*-arm64.dmg dist/Pi-Agent-Desktop-*-arm64.zip > dist/SHA256SUMS.txt
