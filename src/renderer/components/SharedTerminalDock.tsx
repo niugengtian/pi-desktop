@@ -13,14 +13,38 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
+    const isDark = document.documentElement.classList.contains("dark");
+    const terminalBackground = isDark ? "#25211c" : "#d8d0bc";
+    const terminalForeground = isDark ? "#ded8ca" : "#40383d";
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily:
         '"SF Mono", Menlo, Monaco, "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Arial Unicode MS", monospace',
-      fontSize: 13,
-      lineHeight: 1.2,
+      fontSize: 14,
+      lineHeight: 1.18,
       scrollback: 10_000,
-      theme: { background: "#0b1020", foreground: "#dbe7f3", cursor: "#93c5fd" },
+      theme: {
+        background: terminalBackground,
+        foreground: terminalForeground,
+        cursor: isDark ? "#e8b07a" : "#40383d",
+        selectionBackground: isDark ? "#655747" : "#aca58e",
+        black: "#201b21",
+        red: "#be100e",
+        green: "#858162",
+        yellow: "#eaa549",
+        blue: "#426a78",
+        magenta: "#97522c",
+        cyan: "#527c8d",
+        white: "#a8a49b",
+        brightBlack: "#665e61",
+        brightRed: "#d5150d",
+        brightGreen: "#989770",
+        brightYellow: "#ffb454",
+        brightBlue: "#547d8b",
+        brightMagenta: "#a85e35",
+        brightCyan: "#6a91a0",
+        brightWhite: "#d8d0bc",
+      },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -73,7 +97,15 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   }, [cwd, sessionId]);
 
   return (
-    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", background: "#0b1020" }}>
+    <div
+      style={{
+        height: "100%",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "light-dark(#d8d0bc, #25211c)",
+      }}
+    >
       <div
         style={{
           height: 32,
@@ -81,8 +113,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
           display: "flex",
           alignItems: "center",
           padding: "0 8px 0 12px",
-          borderBottom: "1px solid #263247",
-          color: "#cbd5e1",
+          borderBottom: "1px solid color-mix(in srgb, var(--border) 75%, var(--text-muted))",
+          color: "light-dark(#40383d, #ded8ca)",
           fontSize: 12,
         }}
       >
@@ -103,7 +135,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
             border: 0,
             borderRadius: 5,
             background: "transparent",
-            color: "#cbd5e1",
+            color: "light-dark(#40383d, #ded8ca)",
             cursor: "pointer",
           }}
         >
