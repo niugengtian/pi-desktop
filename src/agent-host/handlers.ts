@@ -15,6 +15,7 @@ import { resourceHandlers } from "./handlers/resources";
 import { createChannelHandlers, initializeChannels } from "./handlers/channels";
 import { createHerdrHandlers } from "./handlers/herdr";
 import { createProcessHandlers } from "./handlers/processes";
+import { createSharedTerminalHandlers } from "./handlers/shared-terminal";
 export { generateSessionTitleWithFallback, applySessionNameIfEmpty } from "./handlers/agent-title";
 export { createAgentNewLockKey } from "./handlers/agent";
 export { initializeChannels } from "./handlers/channels";
@@ -43,6 +44,7 @@ import { ManagedProcessError } from "./managed-process/service";
 
 import { HerdrBridgeError } from "./herdr/errors";
 import { clearHerdrBridge, initializeHerdrBridge } from "./herdr/runtime";
+import { SharedTerminalService } from "./shared-terminal/service";
 
 export function registerHandlers(server: RpcServer): () => Promise<void> {
   const bindings = createSessionEventBindings(server);
@@ -104,6 +106,8 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   const channelHandlers = createChannelHandlers(channelManager);
   const processHandlers = createProcessHandlers(managedProcesses, managedCall);
   const herdrHandlers = createHerdrHandlers(herdr, herdrCall);
+  const sharedTerminal = new SharedTerminalService();
+  const sharedTerminalHandlers = createSharedTerminalHandlers(sharedTerminal);
 
   const guard =
     <P, R>(handler: (params: P, context: RpcRequestContext) => R) =>
@@ -158,6 +162,14 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "herdr.terminal.close": guard(herdrHandlers.terminalClose),
 
     "host.toolchain": guard(resourceHandlers.toolchain),
+
+    "sharedTerminal.probe": guard(sharedTerminalHandlers.probe),
+
+    "sharedTerminal.ensure": guard(sharedTerminalHandlers.ensure),
+
+    "sharedTerminal.status": guard(sharedTerminalHandlers.status),
+
+    "sharedTerminal.close": guard(sharedTerminalHandlers.close),
 
     "processes.list": guard(processHandlers.list),
 
@@ -330,6 +342,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     { name: "Herdr tool sync", stop: stopHerdrToolSync },
     { name: "Herdr", stop: () => herdr.shutdown() },
     { name: "Herdr registration", stop: () => clearHerdrBridge(herdr) },
+    { name: "shared terminals", stop: () => sharedTerminal.shutdown() },
     { name: "managed processes", stop: () => managedProcesses.stopAll("host") },
     { name: "channels", stop: () => channelManager.shutdown() },
     { name: "file watches", stop: stopAllFileWatches },

@@ -92,6 +92,10 @@ async function mount(t, { sidebar = false, installation, runningInstallation, st
     alert: (message) => alerts.push(message),
     requestAnimationFrame: (callback) => setTimeout(callback, 0),
     cancelAnimationFrame: (timer) => clearTimeout(timer),
+    addEventListener() {},
+    removeEventListener() {},
+    innerWidth: 1280,
+    innerHeight: 800,
     piBridge: {
       async selectDirectory() {
         return directoryChoices.shift() ?? null;
@@ -194,7 +198,13 @@ async function mount(t, { sidebar = false, installation, runningInstallation, st
           (node.props["aria-label"] === label || node.props.title === label || text(node) === label),
       );
       await act(async () => {
-        void node.props.onClick({ stopPropagation() {}, preventDefault() {} });
+        void node.props.onClick({
+          stopPropagation() {},
+          preventDefault() {},
+          currentTarget: {
+            getBoundingClientRect: () => ({ top: 20, right: 300, bottom: 52, left: 268, width: 32, height: 32 }),
+          },
+        });
       });
     },
     async change(event) {

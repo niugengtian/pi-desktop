@@ -44,6 +44,7 @@ import type {
   ChannelTestSendResult,
 } from "../shared/channel-types";
 import type { ToolCapabilityId, ToolProvider } from "../shared/toolchains/types";
+import type { SharedTerminalProbeResult, SharedTerminalSessionInfo } from "./shared-terminal";
 import type {
   ManagedProcessChangedEvent,
   ManagedProcessLogStream,
@@ -77,6 +78,18 @@ export interface Api {
       capabilities: Partial<Record<ToolCapabilityId, { provider: ToolProvider; version: string }>>;
     };
   };
+
+  // Shared tmux terminal lifecycle. Attach/input/output arrive in phase two.
+  "sharedTerminal.probe": { params: { refresh?: boolean } | void; result: SharedTerminalProbeResult };
+  "sharedTerminal.ensure": {
+    params: { sessionId: string; cwd: string };
+    result: SharedTerminalSessionInfo;
+  };
+  "sharedTerminal.status": {
+    params: { sessionId: string };
+    result: SharedTerminalSessionInfo | null;
+  };
+  "sharedTerminal.close": { params: { sessionId: string }; result: { ok: true } };
 
   // External terminal agents managed by a pinned Herdr protocol adapter.
   "herdr.runtime.get": { params: void; result: HerdrRuntimeSnapshot };

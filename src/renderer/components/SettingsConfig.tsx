@@ -17,10 +17,7 @@ import { APP_AUTHOR, APP_DISPLAY_NAME, APP_GITHUB_URL, APP_VERSION, PI_VERSION }
 import appIconUrl from "../../../build/icon.png";
 import { isAutoSessionTitleEnabled, setAutoSessionTitleEnabled } from "../lib/auto-session-title";
 import { getCacheWarmingStatus, setCacheWarmingMode } from "../lib/api-client";
-import { HerdrSettings } from "./herdr/HerdrSettings";
-
-export type SettingsTab =
-  "general" | "herdr" | "browser" | "channels" | "models" | "tools" | "skills" | "plugins" | "about";
+export type SettingsTab = "general" | "browser" | "channels" | "models" | "tools" | "skills" | "plugins" | "about";
 
 interface SettingsConfigProps {
   cwd: string | null;
@@ -96,7 +93,6 @@ export function SettingsConfig({
     { id: "skills", label: t("skills", "Skills") },
     { id: "plugins", label: t("plugins", "Plugins") },
     { id: "browser", label: t("browser", "Browser") },
-    { id: "herdr", label: t("herdr", "Herdr") },
     { id: "channels", label: t("channels", "Channels") },
     { id: "tools", label: t("developerTools", "Developer Tools") },
     { id: "about", label: t("about", "About") },
@@ -302,7 +298,6 @@ export function SettingsConfig({
               />
             )}
             {activeTab === "browser" && <BrowserSettings sessionId={sessionId} />}
-            {activeTab === "herdr" && <HerdrSettings />}
             {activeTab === "models" && (
               <ModelsConfig embedded cwd={cwd} onClose={() => undefined} onChanged={onModelsChanged} />
             )}

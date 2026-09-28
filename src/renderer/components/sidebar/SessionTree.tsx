@@ -1,5 +1,9 @@
 import { call } from "@/lib/api-client";
 import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+
+const renderSessionMenuPortal = (content: React.ReactNode) =>
+  typeof document?.body?.appendChild === "function" ? createPortal(content, document.body) : content;
 import type { SessionInfo } from "@/lib/types";
 import { useI18n } from "@/i18n";
 import { getSessionDisplayTitle } from "@/lib/session-list";
@@ -244,6 +248,7 @@ function SessionItem({
   const [deleting, setDeleting] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [providerBindings, setProviderBindings] = useState<PageProviderBinding[] | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const actionsSummaryRef = useRef<HTMLButtonElement>(null);
@@ -268,6 +273,17 @@ function SessionItem({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const close = () => closeActionsMenu();
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [actionsOpen, closeActionsMenu]);
 
   const title = getSessionDisplayTitle(session);
 
@@ -346,6 +362,18 @@ function SessionItem({
     } catch (error) {
       window.alert(error instanceof Error ? error.message : String(error));
     }
+  }, []);
+
+  const positionActionsMenu = useCallback((anchor?: { getBoundingClientRect(): DOMRect }) => {
+    const button = anchor ?? actionsSummaryRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(280, window.innerWidth - 16);
+    const estimatedHeight = Math.min(440, window.innerHeight * 0.7);
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const below = rect.bottom + 4;
+    const top = below + estimatedHeight <= window.innerHeight - 8 ? below : Math.max(8, rect.top - estimatedHeight - 4);
+    setMenuPosition({ top, left });
   }, []);
 
   const loadProviderBindings = useCallback(async () => {
@@ -726,7 +754,10 @@ function SessionItem({
               onClick={(event) => {
                 event.stopPropagation();
                 setActionsOpen((open) => {
-                  if (!open) void loadProviderBindings();
+                  if (!open) {
+                    positionActionsMenu(event.currentTarget);
+                    void loadProviderBindings();
+                  }
                   return !open;
                 });
               }}
@@ -750,171 +781,153 @@ function SessionItem({
                 <circle cx="19" cy="12" r="1.7" />
               </svg>
             </button>
-            {actionsOpen && (
-              <div
-                role="menu"
-                aria-label={t("sessionActions", "Session actions")}
-                style={{
-                  position: "absolute",
-                  top: 36,
-                  right: 0,
-                  zIndex: 50,
-                  minWidth: 280,
-                  maxHeight: "min(70vh, 440px)",
-                  overflowY: "auto",
-                  padding: 4,
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  background: "var(--bg)",
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
-                }}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="session-menu-item"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closeActionsMenu();
-                    void copyText(session.id);
+            {actionsOpen &&
+              menuPosition &&
+              renderSessionMenuPortal(
+                <div
+                  role="menu"
+                  aria-label={t("sessionActions", "Session actions")}
+                  style={{
+                    position: "fixed",
+                    top: menuPosition.top,
+                    left: menuPosition.left,
+                    zIndex: 50,
+                    width: "min(280px, calc(100vw - 16px))",
+                    maxHeight: "min(70vh, 440px)",
+                    overflowY: "auto",
+                    padding: 4,
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    background: "var(--bg)",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
                   }}
-                  style={sessionMenuItemStyle}
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    aria-hidden="true"
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="session-menu-item"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeActionsMenu();
+                      void copyText(session.id);
+                    }}
+                    style={sessionMenuItemStyle}
                   >
-                    <rect x="9" y="9" width="13" height="13" rx="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                  </svg>
-                  {t("copyPiSessionId", "Copy Pi session ID")}
-                </button>
-                {providerBindings === null ? (
-                  <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>
-                    {t("loadingProviderBindings", "Loading provider bindings…")}
-                  </div>
-                ) : providerBindings.length === 0 ? (
-                  <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>
-                    {t("noProviderBinding", "No Page Provider binding")}
-                  </div>
-                ) : (
-                  providerBindings.map((binding) => (
-                    <div key={`${binding.modelId}:${binding.conversationId}`}>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="session-menu-item"
-                        title={binding.conversationId}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          closeActionsMenu();
-                          void copyText(binding.conversationId);
-                        }}
-                        style={sessionMenuItemStyle}
-                      >
-                        <span aria-hidden="true">#</span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {t("copyProviderConversationId", "Copy {model} conversation ID").replace(
-                            "{model}",
-                            binding.modelId,
-                          )}
-                        </span>
-                      </button>
-                      {binding.conversationUrl && (
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      aria-hidden="true"
+                    >
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    复制 PI 会话 ID
+                  </button>
+                  {providerBindings === null ? (
+                    <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>正在加载网页会话…</div>
+                  ) : providerBindings.length === 0 ? (
+                    <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>暂无网页会话绑定</div>
+                  ) : (
+                    providerBindings.map((binding) => (
+                      <div key={`${binding.modelId}:${binding.conversationId}`}>
                         <button
                           type="button"
                           role="menuitem"
                           className="session-menu-item"
-                          title={binding.conversationUrl}
+                          title={binding.conversationId}
                           onClick={(event) => {
                             event.stopPropagation();
                             closeActionsMenu();
-                            void copyText(binding.conversationUrl!);
+                            void copyText(binding.conversationId);
                           }}
                           style={sessionMenuItemStyle}
                         >
-                          <span aria-hidden="true">↗</span>
+                          <span aria-hidden="true">#</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {t("copyProviderConversationUrl", "Copy {model} conversation URL").replace(
-                              "{model}",
-                              binding.modelId,
-                            )}
+                            复制 {binding.modelId} 会话 ID
                           </span>
                         </button>
-                      )}
-                    </div>
-                  ))
-                )}
-                <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="session-menu-item"
-                  onClick={startRename}
-                  style={sessionMenuItemStyle}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
+                        {binding.conversationUrl && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="session-menu-item"
+                            title={binding.conversationUrl}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              closeActionsMenu();
+                              void copyText(binding.conversationUrl!);
+                            }}
+                            style={sessionMenuItemStyle}
+                          >
+                            <span aria-hidden="true">↗</span>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              复制 {binding.modelId} 会话网址
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="session-menu-item"
+                    onClick={startRename}
+                    style={sessionMenuItemStyle}
                   >
-                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-                  </svg>
-                  {t("rename", "Rename")}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="session-menu-item"
-                  onClick={handleDeleteClick}
-                  style={{ ...sessionMenuItemStyle, color: "var(--danger)" }}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                    </svg>
+                    {t("rename", "Rename")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="session-menu-item"
+                    onClick={handleDeleteClick}
+                    style={{ ...sessionMenuItemStyle, color: "var(--danger)" }}
                   >
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                    <path d="M10 11v6M14 11v6" />
-                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                  </svg>
-                  {t("delete", "Delete")}
-                </button>
-                <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
-                <div style={{ padding: "4px 9px 6px", color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
-                  <div title={session.created}>
-                    {t("sessionCreatedAt", "Created: {date}").replace(
-                      "{date}",
-                      formatDateTime(session.created, language),
-                    )}
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6M14 11v6" />
+                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                    </svg>
+                    {t("delete", "Delete")}
+                  </button>
+                  <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
+                  <div style={{ padding: "4px 9px 6px", color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
+                    <div title={session.created}>创建：{formatDateTime(session.created, language)}</div>
+                    <div title={session.modified}>更新：{formatDateTime(session.modified, language)}</div>
                   </div>
-                  <div title={session.modified}>
-                    {t("sessionUpdatedAt", "Updated: {date}").replace(
-                      "{date}",
-                      formatDateTime(session.modified, language),
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+                </div>,
+              )}
           </div>
         </>
       )}
