@@ -78,7 +78,12 @@ export class SharedTerminalService {
       cols: this.dimension(cols, 80),
       rows: this.dimension(rows, 24),
       cwd,
-      env: { ...process.env, TERM: "xterm-256color" },
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        LANG: process.env.LANG && process.env.LANG !== "C" ? process.env.LANG : "en_US.UTF-8",
+        LC_CTYPE: process.env.LC_CTYPE && process.env.LC_CTYPE !== "C" ? process.env.LC_CTYPE : "en_US.UTF-8",
+      },
     });
     record.pty = pty;
     record.attached = true;

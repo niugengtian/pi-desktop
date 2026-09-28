@@ -15,7 +15,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
     if (!mount) return;
     const terminal = new Terminal({
       cursorBlink: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontFamily:
+        '"SF Mono", Menlo, Monaco, "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Arial Unicode MS", monospace',
       fontSize: 13,
       lineHeight: 1.2,
       scrollback: 10_000,
