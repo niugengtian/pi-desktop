@@ -3,7 +3,14 @@ import { useEffect, useState, useCallback, useRef, type CSSProperties } from "re
 import type { SessionInfo } from "@/lib/types";
 import { useI18n } from "@/i18n";
 import { getSessionDisplayTitle } from "@/lib/session-list";
-import { formatNumber, formatRelativeDateTime } from "@/lib/locale-format";
+import { formatDateTime, formatNumber, formatRelativeDateTime } from "@/lib/locale-format";
+
+type PageProviderBinding = {
+  modelId: string;
+  conversationId: string;
+  conversationUrl?: string;
+  provisional: boolean;
+};
 
 export interface SessionTreeNode {
   session: SessionInfo;
@@ -236,6 +243,7 @@ function SessionItem({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [providerBindings, setProviderBindings] = useState<PageProviderBinding[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const actionsSummaryRef = useRef<HTMLButtonElement>(null);
@@ -331,6 +339,25 @@ function SessionItem({
     e.stopPropagation();
     setConfirmDelete(false);
   }, []);
+
+  const copyText = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const loadProviderBindings = useCallback(async () => {
+    setProviderBindings(null);
+    try {
+      const result = await call("sessions.pageProviderBindings", { id: session.id });
+      setProviderBindings(result.bindings);
+    } catch (error) {
+      console.error("failed to load Page Provider bindings", error);
+      setProviderBindings([]);
+    }
+  }, [session.id]);
 
   // Fixed-height outer wrapper — content swaps in place so the list never reflows
   const ITEM_HEIGHT = 54;
@@ -698,7 +725,10 @@ function SessionItem({
               aria-expanded={actionsOpen}
               onClick={(event) => {
                 event.stopPropagation();
-                setActionsOpen((open) => !open);
+                setActionsOpen((open) => {
+                  if (!open) void loadProviderBindings();
+                  return !open;
+                });
               }}
               style={{
                 display: "flex",
@@ -729,7 +759,9 @@ function SessionItem({
                   top: 36,
                   right: 0,
                   zIndex: 50,
-                  minWidth: 132,
+                  minWidth: 280,
+                  maxHeight: "min(70vh, 440px)",
+                  overflowY: "auto",
                   padding: 4,
                   border: "1px solid var(--border)",
                   borderRadius: 8,
@@ -737,6 +769,88 @@ function SessionItem({
                   boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
                 }}
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeActionsMenu();
+                    void copyText(session.id);
+                  }}
+                  style={sessionMenuItemStyle}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden="true"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  {t("copyPiSessionId", "Copy Pi session ID")}
+                </button>
+                {providerBindings === null ? (
+                  <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>
+                    {t("loadingProviderBindings", "Loading provider bindings…")}
+                  </div>
+                ) : providerBindings.length === 0 ? (
+                  <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>
+                    {t("noProviderBinding", "No Page Provider binding")}
+                  </div>
+                ) : (
+                  providerBindings.map((binding) => (
+                    <div key={`${binding.modelId}:${binding.conversationId}`}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="session-menu-item"
+                        title={binding.conversationId}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeActionsMenu();
+                          void copyText(binding.conversationId);
+                        }}
+                        style={sessionMenuItemStyle}
+                      >
+                        <span aria-hidden="true">#</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {t("copyProviderConversationId", "Copy {model} conversation ID").replace(
+                            "{model}",
+                            binding.modelId,
+                          )}
+                        </span>
+                      </button>
+                      {binding.conversationUrl && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="session-menu-item"
+                          title={binding.conversationUrl}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeActionsMenu();
+                            void copyText(binding.conversationUrl!);
+                          }}
+                          style={sessionMenuItemStyle}
+                        >
+                          <span aria-hidden="true">↗</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {t("copyProviderConversationUrl", "Copy {model} conversation URL").replace(
+                              "{model}",
+                              binding.modelId,
+                            )}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+                <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
                 <button
                   type="button"
                   role="menuitem"
@@ -784,6 +898,21 @@ function SessionItem({
                   </svg>
                   {t("delete", "Delete")}
                 </button>
+                <div style={{ height: 1, margin: "4px", background: "var(--border)" }} />
+                <div style={{ padding: "4px 9px 6px", color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
+                  <div title={session.created}>
+                    {t("sessionCreatedAt", "Created: {date}").replace(
+                      "{date}",
+                      formatDateTime(session.created, language),
+                    )}
+                  </div>
+                  <div title={session.modified}>
+                    {t("sessionUpdatedAt", "Updated: {date}").replace(
+                      "{date}",
+                      formatDateTime(session.modified, language),
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>

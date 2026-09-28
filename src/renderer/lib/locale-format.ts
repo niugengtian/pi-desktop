@@ -27,6 +27,12 @@ export function formatRelativeDateTime(
   return new Intl.DateTimeFormat(language, { dateStyle: "medium" }).format(date);
 }
 
+export function formatDateTime(value: string | number | Date, language: AppLanguage): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
 export function formatFileSize(bytes: number, language: AppLanguage): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";
   const units = ["B", "KB", "MB", "GB", "TB"];

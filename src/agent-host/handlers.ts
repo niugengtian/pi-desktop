@@ -195,6 +195,8 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
 
     "sessions.rename": guard(sessionHandlers.rename),
 
+    "sessions.pageProviderBindings": guard(sessionHandlers.pageProviderBindings),
+
     "worktrees.list": guard(worktreeHandlers.list),
 
     "worktrees.create": guard(worktreeHandlers.create),

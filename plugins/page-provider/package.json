@@ -1,0 +1,19 @@
+{
+  "name": "@niugengtian/pi-page-provider",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Use a logged-in DeepSeek web page as a native Pi model through OpenCLI.",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/page-provider.ts"
+    ]
+  }
+}

@@ -194,6 +194,20 @@ export interface Api {
     params: { id: string; name: string };
     result: { ok: true };
   };
+  "sessions.pageProviderBindings": {
+    params: { id: string };
+    result: {
+      bindings: Array<{
+        modelId: string;
+        site: string;
+        mode?: string;
+        conversationId: string;
+        conversationUrl?: string;
+        updatedAt?: string;
+        provisional: boolean;
+      }>;
+    };
+  };
 
   "worktrees.list": {
     params: { projectRoot: string };

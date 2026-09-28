@@ -52,6 +52,7 @@ const { useSessionList, SessionSidebar, testApi } = await importTestBundle("sess
           if(method === 'system.home') return {home:'/fixture'};
           if(method === 'worktrees.list' && worktrees) return worktrees(params.projectRoot);
           if(method === 'worktrees.list') return {projectRoot: params.projectRoot, isGit: false, isTopLevel: true, worktrees: []};
+          if(method === 'sessions.pageProviderBindings') return {bindings: []};
           return pending(requests,method,params);
         }
       `,
