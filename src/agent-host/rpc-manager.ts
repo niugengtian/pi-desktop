@@ -36,6 +36,8 @@ import { getDesktopSessionToolNames, setDesktopSessionToolNames } from "./sessio
 import { peekManagedProcessService } from "./managed-process/runtime";
 import { createManagedProcessToolDefinitions } from "./managed-process/tools";
 import { installManagedProcessSessionRedaction } from "./managed-process/session-redaction";
+import { peekSharedTerminalService } from "./shared-terminal/runtime";
+import { createSharedTerminalToolDefinitions } from "./shared-terminal/tools";
 import { peekHerdrBridge } from "./herdr/runtime";
 import { createHerdrToolDefinitions, herdrToolNamesForRuntime, isHerdrToolName } from "./herdr/tools";
 import { installHerdrSessionRedaction } from "./herdr/session-redaction";
@@ -1496,6 +1498,9 @@ export async function startRpcSession(
       createBashToolDefinition(cwd, bashOptions),
       ...createDesktopSearchToolDefinitions(cwd, executionContext, toolchainRuntime),
       ...createBrowserToolDefinitions(),
+      ...(peekSharedTerminalService()
+        ? createSharedTerminalToolDefinitions(sessionManager.getSessionId(), cwd, peekSharedTerminalService()!)
+        : []),
       ...(peekHerdrBridge() ? createHerdrToolDefinitions(cwd, peekHerdrBridge()!) : []),
       ...(peekManagedProcessService()
         ? createManagedProcessToolDefinitions(

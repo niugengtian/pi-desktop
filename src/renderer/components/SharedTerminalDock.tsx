@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { call, subscribe } from "@/lib/api-client";
+import { copyText } from "@/lib/clipboard";
 
 export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: string; cwd: string; onHide: () => void }) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -51,6 +52,23 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
     fit.fit();
 
     let disposed = false;
+    const copySelection = () => {
+      const selection = terminal.getSelection();
+      if (selection) void copyText(selection).catch(showError);
+    };
+    const handleContextMenu = (event: MouseEvent) => {
+      if (!terminal.hasSelection()) return;
+      event.preventDefault();
+      copySelection();
+    };
+    mount.addEventListener("contextmenu", handleContextMenu);
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || !event.metaKey || event.key.toLowerCase() !== "c" || !terminal.hasSelection()) {
+        return true;
+      }
+      copySelection();
+      return false;
+    });
     const disposables = [
       terminal.onData((data) => void call("sharedTerminal.write", { sessionId, data }).catch(showError)),
       terminal.onResize(
@@ -85,6 +103,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       disposed = true;
       unsubscribe.forEach((item) => item());
       observer.disconnect();
+      mount.removeEventListener("contextmenu", handleContextMenu);
       disposables.forEach((item) => item.dispose());
       terminal.dispose();
       terminalRef.current = null;

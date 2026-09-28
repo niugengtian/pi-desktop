@@ -44,7 +44,7 @@ import { ManagedProcessError } from "./managed-process/service";
 
 import { HerdrBridgeError } from "./herdr/errors";
 import { clearHerdrBridge, initializeHerdrBridge } from "./herdr/runtime";
-import { SharedTerminalService } from "./shared-terminal/service";
+import { initializeSharedTerminalService } from "./shared-terminal/runtime";
 
 export function registerHandlers(server: RpcServer): () => Promise<void> {
   const bindings = createSessionEventBindings(server);
@@ -106,7 +106,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   const channelHandlers = createChannelHandlers(channelManager);
   const processHandlers = createProcessHandlers(managedProcesses, managedCall);
   const herdrHandlers = createHerdrHandlers(herdr, herdrCall);
-  const sharedTerminal = new SharedTerminalService(server);
+  const sharedTerminal = initializeSharedTerminalService(server);
   const sharedTerminalHandlers = createSharedTerminalHandlers(sharedTerminal);
 
   const guard =
