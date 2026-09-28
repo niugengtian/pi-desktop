@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -10,6 +10,23 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copyLabel, setCopyLabel] = useState("复制选区");
+  const copySelectedText = useCallback(async () => {
+    const selection = terminalRef.current?.getSelection() ?? "";
+    if (!selection) {
+      setCopyLabel("请先选择文字");
+      window.setTimeout(() => setCopyLabel("复制选区"), 1_500);
+      return;
+    }
+    try {
+      await window.piBridge.writeClipboardText(selection);
+      setCopyLabel("已复制");
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+      setCopyLabel("复制失败");
+    }
+    window.setTimeout(() => setCopyLabel("复制选区"), 1_500);
+  }, []);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -164,6 +181,24 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
             连接失败
           </span>
         )}
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void copySelectedText()}
+          title="复制当前终端选区"
+          style={{
+            height: 24,
+            marginRight: 6,
+            padding: "0 8px",
+            border: "1px solid var(--border)",
+            borderRadius: 5,
+            background: "var(--bg-panel)",
+            color: "var(--text)",
+            cursor: "pointer",
+          }}
+        >
+          {copyLabel}
+        </button>
         <button
           type="button"
           onClick={onHide}
