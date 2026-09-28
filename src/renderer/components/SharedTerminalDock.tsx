@@ -61,13 +61,38 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       event.preventDefault();
       copySelection();
     };
+    const handleCopy = (event: ClipboardEvent) => {
+      const selection = terminal.getSelection();
+      if (!selection || !event.clipboardData) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData.setData("text/plain", selection);
+    };
+    const handlePaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void call("sharedTerminal.write", { sessionId, data: text }).catch(showError);
+    };
     mount.addEventListener("contextmenu", handleContextMenu);
+    mount.addEventListener("copy", handleCopy, true);
+    mount.addEventListener("paste", handlePaste, true);
     terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type !== "keydown" || !event.metaKey || event.key.toLowerCase() !== "c" || !terminal.hasSelection()) {
-        return true;
+      if (event.type !== "keydown" || !event.metaKey) return true;
+      const key = event.key.toLowerCase();
+      if (key === "c" && terminal.hasSelection()) {
+        copySelection();
+        return false;
       }
-      copySelection();
-      return false;
+      if (key === "v") {
+        void navigator.clipboard
+          ?.readText()
+          .then((text) => (text ? call("sharedTerminal.write", { sessionId, data: text }) : undefined))
+          .catch(showError);
+        return false;
+      }
+      return true;
     });
     const disposables = [
       terminal.onData((data) => void call("sharedTerminal.write", { sessionId, data }).catch(showError)),
@@ -104,6 +129,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       unsubscribe.forEach((item) => item());
       observer.disconnect();
       mount.removeEventListener("contextmenu", handleContextMenu);
+      mount.removeEventListener("copy", handleCopy, true);
+      mount.removeEventListener("paste", handlePaste, true);
       disposables.forEach((item) => item.dispose());
       terminal.dispose();
       terminalRef.current = null;
