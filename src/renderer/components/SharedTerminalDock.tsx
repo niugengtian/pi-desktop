@@ -20,7 +20,28 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       fontSize: 13,
       lineHeight: 1.2,
       scrollback: 10_000,
-      theme: { background: "#0b1020", foreground: "#dbe7f3", cursor: "#93c5fd" },
+      theme: {
+        background: "#d8d0bc",
+        foreground: "#40383d",
+        cursor: "#40383d",
+        selectionBackground: "#aca58e",
+        black: "#201b21",
+        red: "#be100e",
+        green: "#858162",
+        yellow: "#eaa549",
+        blue: "#426a78",
+        magenta: "#97522c",
+        cyan: "#527c8d",
+        white: "#a8a49b",
+        brightBlack: "#665e61",
+        brightRed: "#d5150d",
+        brightGreen: "#989770",
+        brightYellow: "#ffb454",
+        brightBlue: "#547d8b",
+        brightMagenta: "#a85e35",
+        brightCyan: "#6a91a0",
+        brightWhite: "#eee9dc",
+      },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -73,7 +94,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   }, [cwd, sessionId]);
 
   return (
-    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", background: "#0b1020" }}>
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", background: "#d8d0bc" }}>
       <div
         style={{
           height: 32,

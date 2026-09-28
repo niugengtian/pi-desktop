@@ -689,13 +689,17 @@ code {
 .markdown-code-block {
   position: relative;
   margin: 6px 0;
+  max-height: min(70vh, 720px);
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 7px;
-  overflow: hidden;
   background: var(--bg);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent);
 }
 .markdown-code-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 5px 10px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
