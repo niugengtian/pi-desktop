@@ -1,0 +1,70 @@
+name: Build Page Provider macOS arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/page-provider-web
+
+permissions:
+  contents: read
+
+concurrency:
+  group: page-provider-macos-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Prepare verified bundled tools
+        run: npm run prepare:bundled-tools -- --target darwin-arm64
+
+      - name: Package unsigned macOS arm64 application
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+
+      - name: Verify application identity and artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="dist/mac-arm64/Pi Agent Desktop.app"
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "app.dlyzzt.pi-agent-desktop"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$app/Contents/Info.plist")" = "Pi Agent Desktop"
+          test -n "$(find dist -maxdepth 1 -type f -name 'Pi-Agent-Desktop-*-arm64.dmg' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -type f -name 'Pi-Agent-Desktop-*-arm64.zip' -print -quit)"
+          shasum -a 256 dist/Pi-Agent-Desktop-*-arm64.dmg dist/Pi-Agent-Desktop-*-arm64.zip > dist/SHA256SUMS.txt
+
+      - name: Upload downloadable package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Pi-Agent-Desktop-page-provider-macos-arm64-${{ github.sha }}
+          path: |
+            dist/Pi-Agent-Desktop-*-arm64.dmg
+            dist/Pi-Agent-Desktop-*-arm64.zip
+            dist/latest-mac.yml
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
