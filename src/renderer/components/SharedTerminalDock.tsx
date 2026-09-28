@@ -21,10 +21,10 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       lineHeight: 1.2,
       scrollback: 10_000,
       theme: {
-        background: "#d8d0bc",
-        foreground: "#40383d",
-        cursor: "#40383d",
-        selectionBackground: "#aca58e",
+        background: "#f7f6f3",
+        foreground: "#1c1a17",
+        cursor: "#1c1a17",
+        selectionBackground: "#ded9cf",
         black: "#201b21",
         red: "#be100e",
         green: "#858162",
@@ -94,7 +94,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   }, [cwd, sessionId]);
 
   return (
-    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", background: "#d8d0bc" }}>
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <div
         style={{
           height: 32,
@@ -102,8 +102,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
           display: "flex",
           alignItems: "center",
           padding: "0 8px 0 12px",
-          borderBottom: "1px solid #263247",
-          color: "#cbd5e1",
+          borderBottom: "1px solid var(--border)",
+          color: "var(--text)",
           fontSize: 12,
         }}
       >
@@ -124,7 +124,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
             border: 0,
             borderRadius: 5,
             background: "transparent",
-            color: "#cbd5e1",
+            color: "var(--text)",
             cursor: "pointer",
           }}
         >
