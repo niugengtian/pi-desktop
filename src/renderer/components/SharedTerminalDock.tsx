@@ -54,7 +54,11 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
     let disposed = false;
     const copySelection = () => {
       const selection = terminal.getSelection();
-      if (selection) void copyText(selection).catch(showError);
+      if (!selection) return;
+      void window.piBridge
+        .writeClipboardText(selection)
+        .catch(() => copyText(selection))
+        .catch(showError);
     };
     const handleContextMenu = (event: MouseEvent) => {
       if (!terminal.hasSelection()) return;

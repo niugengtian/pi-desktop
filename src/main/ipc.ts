@@ -1,5 +1,5 @@
 import { getNativeLanguage } from "./native-language";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, Notification, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent } from "electron";
 import type {
   ChannelCredentialWrite,
@@ -127,6 +127,10 @@ export function installDesktopIpc(options: DesktopIpcOptions): void {
   };
 
   trustedHandle("desktop:get-version", () => app.getVersion());
+  trustedHandle("desktop:clipboard-write-text", (_event, text: unknown) => {
+    if (typeof text !== "string" || text.length > 1024 * 1024) throw new Error("Invalid clipboard text");
+    clipboard.writeText(text);
+  });
   trustedHandle("desktop:update:get-state", () => updateManager.getState());
   trustedHandle("desktop:update:check", () => updateManager.checkForUpdates());
   trustedHandle("desktop:update:download", () => updateManager.downloadUpdate());
