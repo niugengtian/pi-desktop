@@ -1,5 +1,5 @@
 import { call } from "@/lib/api-client";
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 const renderSessionMenuPortal = (content: React.ReactNode) =>
@@ -8,6 +8,7 @@ import type { SessionInfo } from "@/lib/types";
 import { useI18n } from "@/i18n";
 import { getSessionDisplayTitle } from "@/lib/session-list";
 import { formatDateTime, formatNumber, formatRelativeDateTime } from "@/lib/locale-format";
+import { floatingMenuPosition } from "@/lib/floating-menu-position";
 
 type PageProviderBinding = {
   modelId: string;
@@ -252,6 +253,7 @@ function SessionItem({
   const inputRef = useRef<HTMLInputElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const actionsSummaryRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
   const restoreFocusFrameRef = useRef<number | null>(null);
   const selectInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -367,14 +369,29 @@ function SessionItem({
   const positionActionsMenu = useCallback((anchor?: { getBoundingClientRect(): DOMRect }) => {
     const button = anchor ?? actionsSummaryRef.current;
     if (!button) return;
-    const rect = button.getBoundingClientRect();
-    const width = Math.min(280, window.innerWidth - 16);
-    const estimatedHeight = Math.min(440, window.innerHeight * 0.7);
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    const below = rect.bottom + 4;
-    const top = below + estimatedHeight <= window.innerHeight - 8 ? below : Math.max(8, rect.top - estimatedHeight - 4);
-    setMenuPosition({ top, left });
+    setMenuPosition(
+      floatingMenuPosition({
+        anchor: button.getBoundingClientRect(),
+        menuWidth: Math.min(280, window.innerWidth - 16),
+        menuHeight: actionsMenuRef.current?.offsetHeight ?? 0,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      }),
+    );
   }, []);
+
+  useLayoutEffect(() => {
+    if (!actionsOpen || !actionsMenuRef.current || !actionsSummaryRef.current) return;
+    const menu = actionsMenuRef.current;
+    const next = floatingMenuPosition({
+      anchor: actionsSummaryRef.current.getBoundingClientRect(),
+      menuWidth: menu.offsetWidth,
+      menuHeight: menu.offsetHeight,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+    setMenuPosition((current) => (current?.top === next.top && current.left === next.left ? current : next));
+  }, [actionsOpen, providerBindings]);
 
   const loadProviderBindings = useCallback(async () => {
     setProviderBindings(null);
@@ -785,13 +802,14 @@ function SessionItem({
               menuPosition &&
               renderSessionMenuPortal(
                 <div
+                  ref={actionsMenuRef}
                   role="menu"
                   aria-label={t("sessionActions", "Session actions")}
                   style={{
                     position: "fixed",
                     top: menuPosition.top,
                     left: menuPosition.left,
-                    zIndex: 50,
+                    zIndex: 500,
                     width: "min(280px, calc(100vw - 16px))",
                     maxHeight: "min(70vh, 440px)",
                     overflowY: "auto",
