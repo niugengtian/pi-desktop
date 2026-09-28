@@ -71,14 +71,21 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       event.preventDefault();
       copySelection();
     };
+    const handleCopy = (event: ClipboardEvent) => {
+      if (!terminal.hasSelection()) return;
+      event.preventDefault();
+      copySelection();
+    };
     const handlePaste = (event: ClipboardEvent) => {
       const text = event.clipboardData?.getData("text/plain") ?? "";
       if (!text) return;
       event.preventDefault();
       void call("sharedTerminal.write", { sessionId, data: text }).catch(showError);
     };
+    const textarea = mount.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
     mount.addEventListener("contextmenu", handleContextMenu);
-    mount.addEventListener("paste", handlePaste);
+    textarea?.addEventListener("copy", handleCopy);
+    textarea?.addEventListener("paste", handlePaste);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown" || !event.metaKey) return true;
       const key = event.key.toLowerCase();
@@ -127,7 +134,8 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       unsubscribe.forEach((item) => item());
       observer.disconnect();
       mount.removeEventListener("contextmenu", handleContextMenu);
-      mount.removeEventListener("paste", handlePaste);
+      textarea?.removeEventListener("copy", handleCopy);
+      textarea?.removeEventListener("paste", handlePaste);
       disposables.forEach((item) => item.dispose());
       terminal.dispose();
       terminalRef.current = null;
