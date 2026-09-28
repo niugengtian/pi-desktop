@@ -89,7 +89,12 @@ export function installAppMenu(
         { role: "redo" },
         { type: "separator" },
         { role: "cut" },
-        { role: "copy" },
+        {
+          role: "copy",
+          click: () => {
+            sendWindowMenuCommand(getWindow, "menu:copy");
+          },
+        },
         { role: "paste" },
         { role: "selectAll" },
       ],

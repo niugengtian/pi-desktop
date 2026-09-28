@@ -34,6 +34,7 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
     "show-update",
     "switch-session",
     "export-diagnostics",
+    "copy",
   ] as const satisfies readonly DesktopMenuEvent[];
   const menuEventSet = new Set<string>(menuEvents);
   const menuEventReplays = new Map(menuEvents.map((event) => [event, new EarlyEventReplay<void>()]));

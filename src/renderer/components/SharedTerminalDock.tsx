@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -9,24 +9,9 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
   const mountRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const selectionRef = useRef("");
+  const focusedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const [copyLabel, setCopyLabel] = useState("复制选区");
-  const copySelectedText = useCallback(async () => {
-    const selection = terminalRef.current?.getSelection() ?? "";
-    if (!selection) {
-      setCopyLabel("请先选择文字");
-      window.setTimeout(() => setCopyLabel("复制选区"), 1_500);
-      return;
-    }
-    try {
-      await window.piBridge.writeClipboardText(selection);
-      setCopyLabel("已复制");
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-      setCopyLabel("复制失败");
-    }
-    window.setTimeout(() => setCopyLabel("复制选区"), 1_500);
-  }, []);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -70,7 +55,7 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
 
     let disposed = false;
     const copySelection = () => {
-      const selection = terminal.getSelection();
+      const selection = terminal.getSelection() || selectionRef.current;
       if (!selection) return;
       void window.piBridge
         .writeClipboardText(selection)
@@ -100,6 +85,14 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       void call("sharedTerminal.write", { sessionId, data: text }).catch(showError);
     };
     const textarea = mount.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
+    const handleFocus = () => {
+      focusedRef.current = true;
+    };
+    const handleBlur = () => {
+      focusedRef.current = false;
+    };
+    mount.addEventListener("focusin", handleFocus);
+    mount.addEventListener("focusout", handleBlur);
     mount.addEventListener("contextmenu", handleContextMenu);
     textarea?.addEventListener("copy", handleCopy);
     textarea?.addEventListener("paste", handlePaste);
@@ -116,7 +109,15 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       }
       return true;
     });
+    const offMenuCopy = window.piBridge.onMenu("copy", () => {
+      if (focusedRef.current && selectionRef.current) copySelection();
+      else document.execCommand("copy");
+    });
     const disposables = [
+      terminal.onSelectionChange(() => {
+        const selection = terminal.getSelection();
+        if (selection) selectionRef.current = selection;
+      }),
       terminal.onData((data) => void call("sharedTerminal.write", { sessionId, data }).catch(showError)),
       terminal.onResize(
         ({ cols, rows }) => void call("sharedTerminal.resize", { sessionId, cols, rows }).catch(() => undefined),
@@ -150,6 +151,9 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       disposed = true;
       unsubscribe.forEach((item) => item());
       observer.disconnect();
+      offMenuCopy();
+      mount.removeEventListener("focusin", handleFocus);
+      mount.removeEventListener("focusout", handleBlur);
       mount.removeEventListener("contextmenu", handleContextMenu);
       textarea?.removeEventListener("copy", handleCopy);
       textarea?.removeEventListener("paste", handlePaste);
@@ -181,24 +185,6 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
             连接失败
           </span>
         )}
-        <button
-          type="button"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => void copySelectedText()}
-          title="复制当前终端选区"
-          style={{
-            height: 24,
-            marginRight: 6,
-            padding: "0 8px",
-            border: "1px solid var(--border)",
-            borderRadius: 5,
-            background: "var(--bg-panel)",
-            color: "var(--text)",
-            cursor: "pointer",
-          }}
-        >
-          {copyLabel}
-        </button>
         <button
           type="button"
           onClick={onHide}

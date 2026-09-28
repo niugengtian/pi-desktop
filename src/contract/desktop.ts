@@ -41,7 +41,7 @@ export type {
 export type HostStatus = "starting" | "ready" | "crashed" | "stopped";
 
 export type DesktopMenuEvent =
-  "new-session" | "settings" | "check-for-updates" | "show-update" | "switch-session" | "export-diagnostics";
+  "new-session" | "settings" | "check-for-updates" | "show-update" | "switch-session" | "export-diagnostics" | "copy";
 
 export type UpdatePhase =
   "disabled" | "idle" | "checking" | "up-to-date" | "available" | "downloading" | "downloaded" | "installing" | "error";
