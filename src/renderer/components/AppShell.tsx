@@ -23,6 +23,7 @@ import { QuickChannelBinding } from "./channels/QuickChannelBinding";
 import { BrowserDock } from "./browser/BrowserDock";
 import { BrowserAuthorizationDialog } from "./browser/BrowserAuthorizationDialog";
 import { ProcessPanel } from "./ProcessPanel";
+import { SharedTerminalDock } from "./SharedTerminalDock";
 import { useTheme } from "@/hooks/useTheme";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/i18n";
@@ -122,6 +123,8 @@ export function AppShell({
   const [channelSnapshot, setChannelSnapshot] = useState<ChannelsSnapshot>(EMPTY_CHANNELS);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sharedTerminalOpen, setSharedTerminalOpen] = useState(false);
+  const [sharedTerminalHeight, setSharedTerminalHeight] = useState(260);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
 
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
@@ -1014,6 +1017,26 @@ export function AppShell({
                 onSnapshotChange={setChannelSnapshot}
               />
             )}
+            {selectedSession && !isMobile && (
+              <button
+                type="button"
+                onClick={() => setSharedTerminalOpen((open) => !open)}
+                title={sharedTerminalOpen ? "隐藏终端" : "显示终端"}
+                aria-label={sharedTerminalOpen ? "隐藏终端" : "显示终端"}
+                style={{
+                  width: 36,
+                  height: 36,
+                  border: 0,
+                  borderLeft: "1px solid var(--border)",
+                  background: sharedTerminalOpen ? "var(--bg-selected)" : "transparent",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                ›_
+              </button>
+            )}
             <SessionInfoPanel
               store={presentationStore}
               showChat={showChat}
@@ -1025,7 +1048,7 @@ export function AppShell({
           </div>
 
           {/* Chat content */}
-          <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
             {showChat ? (
               <SessionProfiler key={sessionKey} id="ChatWindow">
                 <ChatWindow
@@ -1104,6 +1127,43 @@ export function AppShell({
               )
             ) : null}
           </div>
+          {sharedTerminalOpen && selectedSession && !isMobile && (
+            <>
+              <div
+                role="separator"
+                aria-label="调整终端高度"
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  event.preventDefault();
+                  const startY = event.clientY;
+                  const startHeight = sharedTerminalHeight;
+                  const move = (next: PointerEvent) =>
+                    setSharedTerminalHeight(
+                      Math.max(140, Math.min(window.innerHeight * 0.65, startHeight + startY - next.clientY)),
+                    );
+                  const stop = () => {
+                    window.removeEventListener("pointermove", move);
+                    window.removeEventListener("pointerup", stop);
+                    document.body.style.cursor = "";
+                    document.body.style.userSelect = "";
+                  };
+                  document.body.style.cursor = "row-resize";
+                  document.body.style.userSelect = "none";
+                  window.addEventListener("pointermove", move);
+                  window.addEventListener("pointerup", stop);
+                }}
+                style={{ height: 5, flexShrink: 0, cursor: "row-resize", background: "var(--border)" }}
+              />
+              <div style={{ height: sharedTerminalHeight, flexShrink: 0, minHeight: 0 }}>
+                <SharedTerminalDock
+                  key={selectedSession.id}
+                  sessionId={selectedSession.id}
+                  cwd={selectedSession.cwd}
+                  onHide={() => setSharedTerminalOpen(false)}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right panel: Browser, Explorer, managed processes and file previews */}

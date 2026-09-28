@@ -44,7 +44,12 @@ import type {
   ChannelTestSendResult,
 } from "../shared/channel-types";
 import type { ToolCapabilityId, ToolProvider } from "../shared/toolchains/types";
-import type { SharedTerminalProbeResult, SharedTerminalSessionInfo } from "./shared-terminal";
+import type {
+  SharedTerminalExitEvent,
+  SharedTerminalOutputEvent,
+  SharedTerminalProbeResult,
+  SharedTerminalSessionInfo,
+} from "./shared-terminal";
 import type {
   ManagedProcessChangedEvent,
   ManagedProcessLogStream,
@@ -88,6 +93,21 @@ export interface Api {
   "sharedTerminal.status": {
     params: { sessionId: string };
     result: SharedTerminalSessionInfo | null;
+  };
+  "sharedTerminal.attach": {
+    params: { sessionId: string; cwd: string; cols: number; rows: number };
+    result: SharedTerminalSessionInfo;
+  };
+  "sharedTerminal.write": { params: { sessionId: string; data: string }; result: { ok: true } };
+  "sharedTerminal.resize": {
+    params: { sessionId: string; cols: number; rows: number };
+    result: { ok: true };
+  };
+  "sharedTerminal.detach": { params: { sessionId: string }; result: { ok: true } };
+  "sharedTerminal.capture": { params: { sessionId: string; lines?: number }; result: { text: string } };
+  "sharedTerminal.send": {
+    params: { sessionId: string; text: string; enter?: boolean };
+    result: { ok: true };
   };
   "sharedTerminal.close": { params: { sessionId: string }; result: { ok: true } };
 
@@ -521,6 +541,8 @@ export interface Streams {
   "channels.activity": ChannelActivity;
   "processes.changed": ManagedProcessChangedEvent;
   "processes.output": ManagedProcessOutputEvent;
+  "sharedTerminal.output": SharedTerminalOutputEvent;
+  "sharedTerminal.exit": SharedTerminalExitEvent;
   "herdr.runtime": HerdrRuntimeSnapshot;
   "herdr.fleet": HerdrFleetSnapshot;
   "herdr.terminal.frame": HerdrTerminalFrame;

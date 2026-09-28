@@ -10,4 +10,18 @@ export interface SharedTerminalSessionInfo {
   name: string;
   cwd: string;
   exists: boolean;
+  attached: boolean;
+}
+
+export interface SharedTerminalOutputEvent {
+  sessionId: string;
+  generation: number;
+  data: string;
+}
+
+export interface SharedTerminalExitEvent {
+  sessionId: string;
+  generation: number;
+  exitCode: number;
+  signal?: number;
 }

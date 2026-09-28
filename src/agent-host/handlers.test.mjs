@@ -154,7 +154,7 @@ test("model connection tests use isolated configuration and preserve success and
 test("registerHandlers exposes every contract method exactly once", async () => {
   const { handlers } = await captureHandlers();
   // Keep in sync with src/contract/api.ts: one handler per contract method.
-  assert.equal(Object.keys(handlers).length, 109);
+  assert.equal(Object.keys(handlers).length, 115);
   for (const method of [
     "host.ping",
     "host.toolchain",

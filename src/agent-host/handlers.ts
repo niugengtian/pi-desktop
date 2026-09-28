@@ -106,7 +106,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   const channelHandlers = createChannelHandlers(channelManager);
   const processHandlers = createProcessHandlers(managedProcesses, managedCall);
   const herdrHandlers = createHerdrHandlers(herdr, herdrCall);
-  const sharedTerminal = new SharedTerminalService();
+  const sharedTerminal = new SharedTerminalService(server);
   const sharedTerminalHandlers = createSharedTerminalHandlers(sharedTerminal);
 
   const guard =
@@ -166,6 +166,18 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "sharedTerminal.probe": guard(sharedTerminalHandlers.probe),
 
     "sharedTerminal.ensure": guard(sharedTerminalHandlers.ensure),
+
+    "sharedTerminal.attach": guard(sharedTerminalHandlers.attach),
+
+    "sharedTerminal.write": guard(sharedTerminalHandlers.write),
+
+    "sharedTerminal.resize": guard(sharedTerminalHandlers.resize),
+
+    "sharedTerminal.detach": guard(sharedTerminalHandlers.detach),
+
+    "sharedTerminal.capture": guard(sharedTerminalHandlers.capture),
+
+    "sharedTerminal.send": guard(sharedTerminalHandlers.send),
 
     "sharedTerminal.status": guard(sharedTerminalHandlers.status),
 
