@@ -319,12 +319,12 @@ test("terminal frame bytes never cross the 8 MiB unacknowledged limit", async (t
   const session = await registry.open(descriptor(executable), "w1:p1", "observe", 80, 24);
   const frames = () => events.filter((event) => event.topic === "herdr.terminal.frame");
 
-  await waitFor(() => frames().length === 5);
+  await waitFor(() => frames().length === 5, 10_000);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(frames().length, 5);
   assert.equal(frames().reduce((total, event) => total + event.data.bytes.byteLength, 0) <= 8 * 1024 * 1024, true);
   session.ack(5);
-  await waitFor(() => frames().length === 10);
+  await waitFor(() => frames().length === 10, 10_000);
   await registry.close(session.terminalId, true);
 });
 

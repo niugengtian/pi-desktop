@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import nodeTest from "node:test";
+import { fileURLToPath } from "node:url";
 import { importTestBundle } from "#test-bundle";
 
 let modulePromise;
@@ -10,7 +11,7 @@ const test = process.platform === "win32" ? nodeTest.skip : nodeTest;
 async function loadSupervisor() {
   modulePromise ??= importTestBundle("src/main/herdr/managed-server", {
     packages: "external",
-    absWorkingDir: new URL("../../..", import.meta.url).pathname,
+    absWorkingDir: fileURLToPath(new URL("../../..", import.meta.url)),
     entryPoints: ["src/main/herdr/managed-server.ts"],
   });
   return modulePromise;
