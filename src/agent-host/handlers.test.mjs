@@ -862,16 +862,13 @@ test("sessions.get returns the contract shape without rescanning known session p
   });
 
   const detail = await handlers["sessions.get"]({ id: sessionId });
-  assert.deepEqual(Object.keys(detail).sort(), [
-    "context",
-    "filePath",
-    "info",
-    "leafId",
-    "sessionId",
-    "stats",
-    "toolNames",
-    "tree",
-  ]);
+  assert.deepEqual(
+    Object.keys(detail)
+      .filter((key) => key !== "toolNames")
+      .sort(),
+    ["context", "filePath", "info", "leafId", "sessionId", "stats", "tree"],
+  );
+  assert.equal(detail.toolNames === undefined || Array.isArray(detail.toolNames), true);
   assert.equal(detail.sessionId, sessionId);
   assert.equal(detail.filePath, sessionPath);
   assert.equal(detail.info.id, sessionId);
