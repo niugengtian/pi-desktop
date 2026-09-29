@@ -20,3 +20,10 @@ test("session identifiers and URLs use the native desktop clipboard", () => {
   assert.match(source, /await window\.piBridge\.writeClipboardText\(text\)/);
   assert.doesNotMatch(source, /navigator\.clipboard\.writeText/);
 });
+
+test("focus moving into the portalled menu does not close it before item clicks", () => {
+  assert.match(
+    source,
+    /onBlur=\{\(event\) => \{[\s\S]*?actionsMenuRef\.current\?\.contains\(nextFocus\)[\s\S]*?closeActionsMenu\(\)/,
+  );
+});

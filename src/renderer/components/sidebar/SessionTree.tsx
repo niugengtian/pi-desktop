@@ -750,7 +750,9 @@ function SessionItem({
           <div
             ref={actionsRef}
             onBlur={(event) => {
-              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              const nextFocus = event.relatedTarget as Node | null;
+              if (nextFocus && (event.currentTarget.contains(nextFocus) || actionsMenuRef.current?.contains(nextFocus)))
+                return;
               closeActionsMenu();
             }}
             onKeyDown={(event) => {
