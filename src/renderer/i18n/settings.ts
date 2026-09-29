@@ -2,7 +2,6 @@
 export const enUS: Record<string, string> = {
   about: "About",
   aboutDescription: "App, Pi, and project information.",
-  herdr: "Herdr",
   appearance: "Appearance",
   appearanceDescription: "Choose the color mode used by the app.",
   appIsUpToDate: "You are using the latest version",
@@ -216,7 +215,6 @@ export const enUS: Record<string, string> = {
 export const zhCN: Record<string, string> = {
   about: "关于",
   aboutDescription: "了解应用版本、Pi 版本和项目信息。",
-  herdr: "Herdr",
   appearance: "外观",
   appearanceDescription: "选择应用使用的颜色模式。",
   appIsUpToDate: "当前已是最新版本",
@@ -419,7 +417,6 @@ export const zhCN: Record<string, string> = {
 export const zhTW: Record<string, string> = {
   about: "關於",
   aboutDescription: "了解應用程式版本、Pi 版本與專案資訊。",
-  herdr: "Herdr",
   appearance: "外觀",
   appearanceDescription: "選擇應用程式使用的顏色模式。",
   appIsUpToDate: "目前已是最新版本",

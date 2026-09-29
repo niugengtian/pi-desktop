@@ -360,7 +360,7 @@ function SessionItem({
 
   const copyText = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await window.piBridge.writeClipboardText(text);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : String(error));
     }
@@ -843,7 +843,7 @@ function SessionItem({
                       <rect x="9" y="9" width="13" height="13" rx="2" />
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                     </svg>
-                    复制 PI 会话 ID
+                    {t("copyPiSessionId", "Copy PI session ID")}
                   </button>
                   {providerBindings === null ? (
                     <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>正在加载网页会话…</div>
@@ -866,7 +866,10 @@ function SessionItem({
                         >
                           <span aria-hidden="true">#</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            复制 {binding.modelId} 会话 ID
+                            {t("copyWebConversationId", "Copy {model} conversation ID").replace(
+                              "{model}",
+                              binding.modelId,
+                            )}
                           </span>
                         </button>
                         {binding.conversationUrl && (
@@ -884,7 +887,10 @@ function SessionItem({
                           >
                             <span aria-hidden="true">↗</span>
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              复制 {binding.modelId} 会话网址
+                              {t("copyWebConversationUrl", "Copy {model} conversation URL").replace(
+                                "{model}",
+                                binding.modelId,
+                              )}
                             </span>
                           </button>
                         )}

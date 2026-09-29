@@ -15,3 +15,8 @@ test("session action menu measures its rendered size after async content changes
 test("session action menu is above application panes but below modal dialogs", () => {
   assert.match(source, /ref=\{actionsMenuRef\}[\s\S]*?zIndex: 500/);
 });
+
+test("session identifiers and URLs use the native desktop clipboard", () => {
+  assert.match(source, /await window\.piBridge\.writeClipboardText\(text\)/);
+  assert.doesNotMatch(source, /navigator\.clipboard\.writeText/);
+});
