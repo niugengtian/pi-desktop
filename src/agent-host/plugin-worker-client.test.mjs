@@ -33,6 +33,7 @@ function fakeWorker(directory, responseExpression) {
 }
 
 test("runs Plugins in an isolated process with the selected npm command and revision", async () => {
+  const hostRevision = process.env.PI_DESKTOP_TOOLCHAIN_REVISION;
   const directory = mkdtempSync(path.join(os.tmpdir(), "pi-plugin-worker-"));
   try {
     const entryPath = fakeWorker(
@@ -45,7 +46,7 @@ test("runs Plugins in an isolated process with the selected npm command and revi
       { entryPath, execPath: process.execPath, timeoutMs: 5_000 },
     );
     assert.equal(result.diagnostics[0].message, `${process.execPath}|/npm-cli.js:12`);
-    assert.equal(process.env.PI_DESKTOP_TOOLCHAIN_REVISION, undefined);
+    assert.equal(process.env.PI_DESKTOP_TOOLCHAIN_REVISION, hostRevision);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

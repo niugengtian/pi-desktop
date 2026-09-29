@@ -48,7 +48,7 @@ test("getUpdates sends cursor and preserves it on an aborted long poll", async (
     signal: new globalThis.AbortController().signal,
   });
   assert.equal(body.get_updates_buf, "cursor-old");
-  assert.equal(body.base_info.bot_agent, "PiDesktop/0.1.0");
+  assert.equal(body.base_info.bot_agent, `PiDesktop/${process.env.PI_DESKTOP_VERSION?.trim() || "0.1.0"}`);
   assert.equal(response.get_updates_buf, "cursor-next");
 });
 

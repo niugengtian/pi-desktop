@@ -16,6 +16,7 @@ function context(commands) {
 }
 
 test("pins Agent Bash to the resolved executable and context-local environment", () => {
+  const hostRevision = process.env.PI_DESKTOP_TOOLCHAIN_REVISION;
   const descriptor = {
     capability: "shell.bash",
     provider: "system",
@@ -35,7 +36,7 @@ test("pins Agent Bash to the resolved executable and context-local environment",
     PATH: "/resolved/bin:/usr/bin",
     PI_DESKTOP_TOOLCHAIN_REVISION: "21",
   });
-  assert.equal(process.env.PI_DESKTOP_TOOLCHAIN_REVISION, undefined);
+  assert.equal(process.env.PI_DESKTOP_TOOLCHAIN_REVISION, hostRevision);
 });
 
 test("removes host credentials from Agent Bash environment", () => {

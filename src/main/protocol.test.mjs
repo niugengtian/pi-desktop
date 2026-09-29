@@ -71,12 +71,11 @@ test("HTML preview assets stay inside the source document directory", async () =
 
 test("HTML preview registry expires, caps, and releases owned entries", async () => {
   const loader = async () => ({ base64: "", size: 0 });
-  const createdAt = Date.now();
   const expiredUrl = createHtmlPreviewUrl("expired", "/workspace/expired.html", loader, 10);
   const ownedUrl = createHtmlPreviewUrl("owned", "/workspace/owned.html", loader, 20);
   const retainedUrl = createHtmlPreviewUrl("retained", "/workspace/retained.html", loader, 30);
 
-  pruneHtmlPreviews(createdAt + HTML_PREVIEW_TTL_MS + 1);
+  pruneHtmlPreviews(Date.now() + HTML_PREVIEW_TTL_MS + 1);
   assert.equal((await getProtocolHandler()({ url: expiredUrl })).status, 404);
 
   const freshOwnedUrl = createHtmlPreviewUrl("owned", "/workspace/owned.html", loader, 20);
