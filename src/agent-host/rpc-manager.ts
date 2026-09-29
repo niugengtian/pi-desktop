@@ -42,6 +42,7 @@ import { peekHerdrBridge } from "./herdr/runtime";
 import { createHerdrToolDefinitions, herdrToolNamesForRuntime, isHerdrToolName } from "./herdr/tools";
 import { installHerdrSessionRedaction } from "./herdr/session-redaction";
 import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
+import { createTaskMemoryExtension } from "./memory/extension";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
 import { createLegacyChannelContextExtension } from "./legacy-channel-context";
 
@@ -1480,6 +1481,7 @@ export async function startRpcSession(
           createLegacyChannelContextExtension(),
           createEphemeralContextExtension(ephemeralContext),
           createDesktopPromptExtension(promptPolicy),
+          createTaskMemoryExtension(),
         ],
       },
     });

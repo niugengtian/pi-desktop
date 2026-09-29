@@ -50,6 +50,24 @@ async function captureHandlers() {
   return { handlers, events };
 }
 
+test("task memory settings default on, persist separately from chat model, and reject stale writes", async () => {
+  const { handlers } = await captureHandlers();
+  const before = await handlers["memoryModel.get"]();
+  assert.equal(before.settings.enabled, true);
+  assert.equal(before.settings.primary, "ollama-local/pi-qwen3-4b-summary:q4km");
+  assert.equal(before.settings.fallback, null);
+  const next = { enabled: true, primary: "local/main", fallback: "local/backup" };
+  const saved = await handlers["memoryModel.set"]({ settings: next, expectedVersion: before.version });
+  assert.deepEqual((await handlers["memoryModel.get"]()).settings, next);
+  assert.notEqual(saved.version, before.version);
+  await assert.rejects(async () => handlers["memoryModel.set"]({ settings: next, expectedVersion: before.version }),
+    (error) => error.code === "CONFLICT");
+  await assert.rejects(async () => handlers["memoryModel.set"]({ settings: { ...next, fallback: next.primary }, expectedVersion: saved.version }),
+    (error) => error.code === "BAD_REQUEST");
+  const probe = await handlers["memoryModel.probe"]({ model: "nonexistent/model" });
+  assert.equal(probe.ok, false);
+});
+
 test("agent command envelope validation runs before session lookup without closing the open command domain", async () => {
   const { handlers } = await captureHandlers();
   for (const command of [null, [], {}, { type: false }, { type: " " }]) {

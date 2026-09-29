@@ -44,6 +44,7 @@ import type {
   ChannelTestSendResult,
 } from "../shared/channel-types";
 import type { ToolCapabilityId, ToolProvider } from "../shared/toolchains/types";
+import type { MemoryModelSettings } from "../shared/memory-model";
 import type {
   SharedTerminalExitEvent,
   SharedTerminalOutputEvent,
@@ -446,6 +447,12 @@ export interface Api {
     };
     result: TestResult;
   };
+  "memoryModel.get": { params: void; result: { settings: MemoryModelSettings; version: string } };
+  "memoryModel.set": {
+    params: { settings: MemoryModelSettings; expectedVersion: string };
+    result: { settings: MemoryModelSettings; version: string };
+  };
+  "memoryModel.probe": { params: { model: string }; result: TestResult };
 
   "auth.providers": { params: void; result: { providers: ProviderStatus[] } };
   "auth.allProviders": { params: void; result: { providers: ApiKeyProviderStatus[] } };

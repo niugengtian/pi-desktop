@@ -3,6 +3,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n, type AppLanguage } from "@/i18n";
 import { ModelsConfig } from "./ModelsConfig";
+import { MemoryModelConfig } from "./MemoryModelConfig";
 import { SkillsConfig, type SkillsConfigHandle } from "./SkillsConfig";
 import { PluginsConfig } from "./PluginsConfig";
 import { ToolchainsConfig } from "./ToolchainsConfig";
@@ -17,7 +18,7 @@ import { APP_AUTHOR, APP_DISPLAY_NAME, APP_GITHUB_URL, APP_VERSION, PI_VERSION }
 import appIconUrl from "../../../build/icon.png";
 import { isAutoSessionTitleEnabled, setAutoSessionTitleEnabled } from "../lib/auto-session-title";
 import { getCacheWarmingStatus, setCacheWarmingMode } from "../lib/api-client";
-export type SettingsTab = "general" | "browser" | "channels" | "models" | "tools" | "skills" | "plugins" | "about";
+export type SettingsTab = "general" | "browser" | "channels" | "models" | "memory" | "tools" | "skills" | "plugins" | "about";
 
 interface SettingsConfigProps {
   cwd: string | null;
@@ -90,6 +91,7 @@ export function SettingsConfig({
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: "general", label: t("general", "General") },
     { id: "models", label: t("models", "Models") },
+    { id: "memory", label: "Memory" },
     { id: "skills", label: t("skills", "Skills") },
     { id: "plugins", label: t("plugins", "Plugins") },
     { id: "browser", label: t("browser", "Browser") },
@@ -301,6 +303,7 @@ export function SettingsConfig({
             {activeTab === "models" && (
               <ModelsConfig embedded cwd={cwd} onClose={() => undefined} onChanged={onModelsChanged} />
             )}
+            {activeTab === "memory" && <MemoryModelConfig />}
             {activeTab === "tools" && <ToolchainsConfig cwd={cwd} />}
             {activeTab === "channels" && <ChannelsConfig onSnapshotChange={onChannelsChanged} />}
             {activeTab === "skills" &&
