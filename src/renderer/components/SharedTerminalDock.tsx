@@ -65,7 +65,9 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
     const pasteText = () => {
       void window.piBridge
         .readClipboardText()
-        .then((text) => (text ? call("sharedTerminal.write", { sessionId, data: text }) : undefined))
+        .then((text) => {
+          if (text) terminal.paste(text);
+        })
         .catch(showError);
     };
     const handleContextMenu = (event: MouseEvent) => {
@@ -78,12 +80,6 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       event.preventDefault();
       copySelection();
     };
-    const handlePaste = (event: ClipboardEvent) => {
-      const text = event.clipboardData?.getData("text/plain") ?? "";
-      if (!text) return;
-      event.preventDefault();
-      void call("sharedTerminal.write", { sessionId, data: text }).catch(showError);
-    };
     const textarea = mount.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
     const handleFocus = () => {
       focusedRef.current = true;
@@ -95,7 +91,6 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
     mount.addEventListener("focusout", handleBlur);
     mount.addEventListener("contextmenu", handleContextMenu);
     textarea?.addEventListener("copy", handleCopy);
-    textarea?.addEventListener("paste", handlePaste);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown" || !event.metaKey) return true;
       const key = event.key.toLowerCase();
@@ -156,7 +151,6 @@ export function SharedTerminalDock({ sessionId, cwd, onHide }: { sessionId: stri
       mount.removeEventListener("focusout", handleBlur);
       mount.removeEventListener("contextmenu", handleContextMenu);
       textarea?.removeEventListener("copy", handleCopy);
-      textarea?.removeEventListener("paste", handlePaste);
       disposables.forEach((item) => item.dispose());
       terminal.dispose();
       terminalRef.current = null;
