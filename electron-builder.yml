@@ -43,12 +43,12 @@ files:
       - package.json
       - "dist/**/*.js"
       - LICENSE
-  # The Feishu SDK's production closure is missed by the worktree symlinked
-  # node_modules dependency collector. Restore only runtime files, not docs/tests.
+  # The Feishu SDK and electron-updater production closures are missed by the
+  # worktree symlinked node_modules collector. Restore runtime files only.
   - from: node_modules
     to: node_modules
     filter:
-      - "{axios,lodash.identity,lodash.merge,lodash.pickby,protobufjs,qs,ws,follow-redirects,form-data,proxy-from-env,debug,ms,asynckit,combined-stream,delayed-stream,es-define-property,side-channel,side-channel-list,side-channel-map,side-channel-weakmap,call-bind-apply-helpers,call-bound,dunder-proto,es-errors,es-object-atoms,es-set-tostringtag,function-bind,get-intrinsic,get-proto,gopd,has-symbols,has-tostringtag,hasown,long,math-intrinsics,mime-db,mime-types,object-inspect,agent-base}/**/*"
+      - "{axios,fs-extra,jsonfile,universalify,graceful-fs,builder-util-runtime,js-yaml,argparse,lazy-val,lodash.escaperegexp,lodash.isequal,semver,tiny-typed-emitter,sax,lodash.identity,lodash.merge,lodash.pickby,protobufjs,qs,ws,follow-redirects,form-data,proxy-from-env,debug,ms,asynckit,combined-stream,delayed-stream,es-define-property,side-channel,side-channel-list,side-channel-map,side-channel-weakmap,call-bind-apply-helpers,call-bound,dunder-proto,es-errors,es-object-atoms,es-set-tostringtag,function-bind,get-intrinsic,get-proto,gopd,has-symbols,has-tostringtag,hasown,long,math-intrinsics,mime-db,mime-types,object-inspect,agent-base}/**/*"
       - "@protobufjs/{aspromise,base64,codegen,eventemitter,fetch,float,path,pool,utf8}/**/*"
       - "!**/{test,tests,docs,examples}/**/*"
       - "!**/*.{md,markdown,ts,tsx,map}"
