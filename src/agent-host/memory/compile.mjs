@@ -19,10 +19,13 @@ export async function compileTaskMemory({
   expectedHash = null,
   onFailure = () => {},
   hotChars = 12_000,
+  signal,
+  commit,
 }) {
   if (!Array.isArray(entries) || !branchLeafId || !sessionId || !root)
     throw new Error("Session, branch and local vault are required.");
   if (settings.enabled === false) return null;
+  signal?.throwIfAborted();
   const projection = buildSessionProjection(entries, branchLeafId);
   const candidates = memoryCandidates(projection, { sessionId, branchLeafId });
   // Exclude the pending user request, if any. Completed assistant turns may be
@@ -61,7 +64,10 @@ export async function compileTaskMemory({
   };
   // A different stage/branch gets a new file, never the previous file's
   // revision. An existing target still requires its own known revision.
-  const saved = writeMemoryMarkdown(root, record, expectedHash);
+  signal?.throwIfAborted();
+  // A background caller may validate and append its ledger in the same
+  // synchronous commit that writes Markdown, without reusing a stale context.
+  const saved = commit ? commit(record, memory) : writeMemoryMarkdown(root, record, expectedHash);
   return {
     ...saved,
     record,

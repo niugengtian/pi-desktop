@@ -86,6 +86,26 @@ test("failed local model writes nothing; manual edits block a later model update
   assert.match(readFileSync(file, "utf8"), /Edited by human/);
 });
 
+test("a cancelled model result cannot reach the synchronous commit", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "memory-compile-cancel-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const controller = new globalThis.AbortController();
+  await assert.rejects(
+    compileTaskMemory(
+      fixture(root, {
+        signal: controller.signal,
+        run: async () => {
+          controller.abort();
+          return "Late result from an abort-ignoring model";
+        },
+        commit: () => assert.fail("cancelled memory must not commit"),
+      }),
+    ),
+    { name: "AbortError" },
+  );
+  assert.deepEqual(searchMemoryMarkdown(root, "Late result"), []);
+});
+
 test("disabled memory never contacts the model or writes files", async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "memory-compile-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

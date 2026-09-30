@@ -21,4 +21,9 @@ export declare function compileTaskMemory(options: {
   expectedHash?: string | null;
   onFailure?: (modelId: string, error: unknown) => void;
   hotChars?: number;
+  signal?: AbortSignal;
+  commit?: (
+    record: CompiledTaskMemory["record"],
+    memory: TaskMemoryResult,
+  ) => { path: string; hash: string; unchanged: boolean };
 }): Promise<CompiledTaskMemory | null>;
