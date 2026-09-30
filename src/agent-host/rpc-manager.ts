@@ -10,6 +10,7 @@ import {
 import { randomUUID } from "crypto";
 import { EXCLUDED_PI_TOOLS, filterDesktopToolNames, validateDesktopToolNames } from "../shared/pi-tool-policy.ts";
 import { assertSessionWritable } from "./session-readonly.ts";
+import { resolveSessionModel } from "./session-model.ts";
 import { cacheSessionPath } from "./session-reader";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "../shared/pi-types";
@@ -617,8 +618,7 @@ export class AgentSessionWrapper {
 
       case "set_model": {
         const { provider, modelId } = command as { provider: string; modelId: string };
-        const model = this.inner.modelRuntime.getModel(provider, modelId);
-        if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
+        const model = await resolveSessionModel(this.inner.modelRuntime, provider, modelId);
         await this.inner.setModel(model);
         return { id: model.id, provider: model.provider };
       }
