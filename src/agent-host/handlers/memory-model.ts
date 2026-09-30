@@ -7,7 +7,8 @@ import { RpcError } from "../../contract/types";
 import { DEFAULT_MEMORY_MODEL_SETTINGS, parseMemoryModelSettings } from "../../shared/memory-model";
 
 const settingsPath = () => path.join(getAgentDir(), "task-memory.json");
-const versionOf = (raw: string | null) => raw === null ? "missing" : `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+const versionOf = (raw: string | null) =>
+  raw === null ? "missing" : `sha256:${createHash("sha256").update(raw).digest("hex")}`;
 function readSnapshot() {
   const raw = existsSync(settingsPath()) ? readFileSync(settingsPath(), "utf8") : null;
   let settings;
@@ -24,20 +25,29 @@ export const memoryModelHandlers = {
   set: (params) => {
     const body = params as { settings: unknown; expectedVersion: string };
     let settings;
-    try { settings = parseMemoryModelSettings(body.settings); }
-    catch (error) { throw new RpcError({ code: "BAD_REQUEST", message: String(error) }); }
+    try {
+      settings = parseMemoryModelSettings(body.settings);
+    } catch (error) {
+      throw new RpcError({ code: "BAD_REQUEST", message: String(error) });
+    }
     const previous = readSnapshot();
-    if (body.expectedVersion !== previous.version) throw new RpcError({ code: "CONFLICT", message: "Memory settings changed; reload before saving." });
+    if (body.expectedVersion !== previous.version)
+      throw new RpcError({ code: "CONFLICT", message: "Memory settings changed; reload before saving." });
     const file = settingsPath();
     mkdirSync(path.dirname(file), { recursive: true });
     const next = JSON.stringify(settings, null, 2) + "\n";
     const tmp = `${file}.${process.pid}.tmp`;
     try {
       writeFileSync(tmp, next, { mode: 0o600, flag: "wx" });
-      if (readSnapshot().version !== previous.version) throw new RpcError({ code: "CONFLICT", message: "Memory settings changed during save." });
+      if (readSnapshot().version !== previous.version)
+        throw new RpcError({ code: "CONFLICT", message: "Memory settings changed during save." });
       renameSync(tmp, file);
     } catch (error) {
-      try { unlinkSync(tmp); } catch { /* no temporary file */ }
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* no temporary file */
+      }
       throw error;
     }
     return { settings, version: versionOf(next) };
@@ -50,23 +60,43 @@ export const memoryModelHandlers = {
     }
     const started = Date.now();
     try {
-      const runtime = await ModelRuntime.create({ modelsPath: path.join(getAgentDir(), "models.json"), allowModelNetwork: false });
+      const runtime = await ModelRuntime.create({
+        modelsPath: path.join(getAgentDir(), "models.json"),
+        allowModelNetwork: false,
+      });
       const model = runtime.getModel(selected.slice(0, split), selected.slice(split + 1));
       if (!model) return { ok: false, error: "Model is not registered in Pi." };
       let local = false;
-      try { local = ["127.0.0.1", "localhost", "[::1]"].includes(new URL(model.baseUrl).hostname); } catch { /* reject implicit remote endpoints */ }
+      try {
+        local = ["127.0.0.1", "localhost", "[::1]"].includes(new URL(model.baseUrl).hostname);
+      } catch {
+        /* reject implicit remote endpoints */
+      }
       if (!local) return { ok: false, error: "Memory processing only accepts a loopback model endpoint." };
       const auth = await runtime.getAuth(model);
       if (!auth) return { ok: false, error: "Model credentials are unavailable." };
-      const response = await runtime.completeSimple(model, {
-        messages: [{ role: "user", content: "Reply with OK only.", timestamp: Date.now() }],
-      }, { timeoutMs: 20_000, maxRetries: 0, maxTokens: 16, cacheRetention: "none" });
-      if (response.stopReason !== "stop") return { ok: false, error: response.errorMessage ?? "Model probe failed.", latencyMs: Date.now() - started };
-      const text = response.content.filter((block) => block.type === "text").map((block) => block.text).join("").trim();
+      const response = await runtime.completeSimple(
+        model,
+        {
+          messages: [{ role: "user", content: "Reply with OK only.", timestamp: Date.now() }],
+        },
+        { timeoutMs: 20_000, maxRetries: 0, maxTokens: 16, cacheRetention: "none" },
+      );
+      if (response.stopReason !== "stop")
+        return { ok: false, error: response.errorMessage ?? "Model probe failed.", latencyMs: Date.now() - started };
+      const text = response.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("")
+        .trim();
       if (!text) return { ok: false, error: "Model returned no text.", latencyMs: Date.now() - started };
       return { ok: true, latencyMs: Date.now() - started, responseText: text.slice(0, 100) };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error), latencyMs: Date.now() - started };
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        latencyMs: Date.now() - started,
+      };
     }
   },
 } satisfies {

@@ -33,6 +33,7 @@ const restoreGitRunner = installToolchainGitRunner();
 const stopHandlers = registerHandlers(server);
 const stopWatcher = startSessionWatcher(server);
 const fauxBySession = new Map<string, FauxCore>();
+const memoryNotifications = new Map<string, string[]>();
 
 function log(message: string): void {
   process.parentPort?.postMessage({ type: "log", message: `[browser-agent-e2e] ${message}` });
@@ -434,6 +435,92 @@ server.handle({
       ]);
     }
     return { ok: true };
+  },
+  "memoryE2e.configure": async (params: unknown) => {
+    const { sessionId } = params as { sessionId?: string };
+    const session = typeof sessionId === "string" ? getRpcSession(sessionId) : undefined;
+    if (!session?.isAlive()) throw new Error("Memory fixture session unavailable");
+    const provider = `memory-e2e-${process.pid}`;
+    const modelId = "fictional-chat";
+    const faux = createFauxCore({
+      api: provider,
+      provider,
+      models: [{ id: modelId, name: "Fictional chat", reasoning: false, input: ["text"] }],
+    });
+    faux.setResponses([
+      fauxAssistantMessage("虚构决策：使用本机模型整理任务记忆，并保留 Markdown 来源。"),
+      fauxAssistantMessage("虚构进度：长任务进入下一阶段，旧决策应晋级温层。"),
+      fauxAssistantMessage("虚构检查：用户人工编辑的 Markdown 必须保留。"),
+    ]);
+    (session.inner.modelRuntime as ModelRuntime).registerProvider(provider, {
+      name: "Fictional chat",
+      baseUrl: "http://127.0.0.1:0",
+      api: provider,
+      apiKey: "fixture-only",
+      streamSimple: faux.streamSimple,
+      models: [
+        {
+          id: modelId,
+          name: "Fictional chat",
+          api: provider,
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 32_000,
+          maxTokens: 1024,
+        },
+      ],
+    });
+    const notifications: string[] = [];
+    memoryNotifications.set(sessionId!, notifications);
+    session.onEvent((event) => {
+      const request = event as { type?: string; method?: string; message?: string };
+      if (request.type === "extension_ui_request" && request.method === "notify" && request.message)
+        notifications.push(request.message);
+    });
+    await session.send({ type: "set_model", provider, modelId });
+    return { provider, modelId };
+  },
+  "memoryE2e.preview": async (params: unknown) => {
+    const { sessionId } = params as { sessionId?: string };
+    const session = typeof sessionId === "string" ? getRpcSession(sessionId) : undefined;
+    if (!session?.isAlive()) throw new Error("Memory fixture session unavailable");
+    let preview: { title: string; message: string } | undefined;
+    const unsubscribe = session.onEvent((event) => {
+      const request = event as { type?: string; id?: string; method?: string; title?: string; message?: string };
+      if (request.type !== "extension_ui_request" || request.method !== "confirm" || !request.id) return;
+      preview = { title: request.title ?? "", message: request.message ?? "" };
+      void session.send({ type: "extension_ui_response", id: request.id, confirmed: false });
+    });
+    try {
+      await session.inner.prompt("/task-memory-preview", { source: "rpc" });
+      if (!preview) throw new Error("Preview dialog was not emitted");
+      return preview;
+    } finally {
+      unsubscribe();
+    }
+  },
+  "memoryE2e.status": async (params: unknown) => {
+    const { sessionId } = params as { sessionId?: string };
+    const session = typeof sessionId === "string" ? getRpcSession(sessionId) : undefined;
+    if (!session?.isAlive()) throw new Error("Memory fixture session unavailable");
+    const branch = session.inner.sessionManager.getBranch();
+    return {
+      isRunning: session.isRunning(),
+      isStreaming: session.inner.isStreaming,
+      assistantTexts: ((session.inner.agent.state?.messages ?? []) as Array<{ role?: string; content?: unknown }>)
+        .filter((m) => m.role === "assistant")
+        .map((m) => textFromContent(m.content))
+        .filter(Boolean),
+      memoryEntries: branch
+        .filter(
+          (e): e is Extract<typeof e, { type: "custom" }> =>
+            e.type === "custom" && e.customType === "pi-desktop-task-memory",
+        )
+        .map((e) => e.data),
+      sessionFile: session.inner.sessionFile,
+      notifications: memoryNotifications.get(sessionId!) ?? [],
+    };
   },
   "browserAgentE2e.status": async (params: unknown) => {
     const body = params as { sessionId?: unknown };

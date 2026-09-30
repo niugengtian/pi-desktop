@@ -18,7 +18,8 @@ import { APP_AUTHOR, APP_DISPLAY_NAME, APP_GITHUB_URL, APP_VERSION, PI_VERSION }
 import appIconUrl from "../../../build/icon.png";
 import { isAutoSessionTitleEnabled, setAutoSessionTitleEnabled } from "../lib/auto-session-title";
 import { getCacheWarmingStatus, setCacheWarmingMode } from "../lib/api-client";
-export type SettingsTab = "general" | "browser" | "channels" | "models" | "memory" | "tools" | "skills" | "plugins" | "about";
+export type SettingsTab =
+  "general" | "browser" | "channels" | "models" | "memory" | "tools" | "skills" | "plugins" | "about";
 
 interface SettingsConfigProps {
   cwd: string | null;

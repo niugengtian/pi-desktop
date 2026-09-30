@@ -60,10 +60,15 @@ test("task memory settings default on, persist separately from chat model, and r
   const saved = await handlers["memoryModel.set"]({ settings: next, expectedVersion: before.version });
   assert.deepEqual((await handlers["memoryModel.get"]()).settings, next);
   assert.notEqual(saved.version, before.version);
-  await assert.rejects(async () => handlers["memoryModel.set"]({ settings: next, expectedVersion: before.version }),
-    (error) => error.code === "CONFLICT");
-  await assert.rejects(async () => handlers["memoryModel.set"]({ settings: { ...next, fallback: next.primary }, expectedVersion: saved.version }),
-    (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(
+    async () => handlers["memoryModel.set"]({ settings: next, expectedVersion: before.version }),
+    (error) => error.code === "CONFLICT",
+  );
+  await assert.rejects(
+    async () =>
+      handlers["memoryModel.set"]({ settings: { ...next, fallback: next.primary }, expectedVersion: saved.version }),
+    (error) => error.code === "BAD_REQUEST",
+  );
   const probe = await handlers["memoryModel.probe"]({ model: "nonexistent/model" });
   assert.equal(probe.ok, false);
 });
@@ -172,7 +177,7 @@ test("model connection tests use isolated configuration and preserve success and
 test("registerHandlers exposes every contract method exactly once", async () => {
   const { handlers } = await captureHandlers();
   // Keep in sync with src/contract/api.ts: one handler per contract method.
-  assert.equal(Object.keys(handlers).length, 115);
+  assert.equal(Object.keys(handlers).length, 118);
   for (const method of [
     "host.ping",
     "host.toolchain",

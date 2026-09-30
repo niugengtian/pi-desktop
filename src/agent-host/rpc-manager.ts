@@ -1470,20 +1470,18 @@ export async function startRpcSession(
     const persistedToolNames = desktopToolNames ?? legacyToolNames;
     const sessionToolNames = persistedToolNames ?? toolNames;
 
-    // Build services first so extension-registered providers are available
-    // before the SDK restores the saved model from the session file.
+    // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
+    const extensionFactories = [
+      createLegacyChannelContextExtension(),
+      createEphemeralContextExtension(ephemeralContext),
+      createDesktopPromptExtension(promptPolicy),
+      createTaskMemoryExtension(),
+    ];
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
-      resourceLoaderOptions: {
-        extensionFactories: [
-          createLegacyChannelContextExtension(),
-          createEphemeralContextExtension(ephemeralContext),
-          createDesktopPromptExtension(promptPolicy),
-          createTaskMemoryExtension(),
-        ],
-      },
+      resourceLoaderOptions: { extensionFactories },
     });
     const executionContext = await toolchainRuntime.createExecutionContext({
       cwd,

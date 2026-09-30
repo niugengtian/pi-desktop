@@ -44,7 +44,16 @@ import { resolveBundledHerdrRoot, resolveHerdrCatalogPath } from "./herdr/catalo
 import { isHerdrSettings } from "../contract/herdr";
 import { discoverHerdrAgentClis, type HerdrAgentCliDiscoverySnapshot } from "./herdr/agent-cli-discovery";
 
-// Must run before app ready
+// Must run before app ready. The opt-in memory test build has its own
+// Electron instance lock and userData; never read the installed app's state.
+const isolatedMemoryTest = app.isPackaged && process.env.PI_DESKTOP_MEMORY_TEST_BUILD === "1";
+if (isolatedMemoryTest) {
+  const userData = path.join(os.homedir(), "Library", "Application Support", "Pi Agent Desktop Memory Test");
+  app.setPath("userData", userData);
+  process.env.PI_CODING_AGENT_DIR = path.join(userData, "agent");
+  process.env.PI_CODING_AGENT_SESSION_DIR = path.join(userData, "sessions");
+  process.env.PI_OFFLINE = "1";
+}
 registerAppProtocol();
 crashReporter.start({
   productName: "Pi Agent Desktop",
@@ -957,6 +966,8 @@ function startMainProcess(): void {
     }
   });
 
+  // An isolated test build must not claim the production deep-link scheme.
+  if (isolatedMemoryTest) return;
   // Deep link registration
   if (process.defaultApp) {
     if (process.argv.length >= 2) {

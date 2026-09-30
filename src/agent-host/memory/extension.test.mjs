@@ -19,15 +19,27 @@ test("task memory can be previewed but never changes ordinary provider context",
   const events = new Map();
   const commands = new Map();
   const pi = {
-    on: (name, handler) => { events.set(name, handler); },
-    registerCommand: (name, options) => { commands.set(name, options.handler); },
+    on: (name, handler) => {
+      events.set(name, handler);
+    },
+    registerCommand: (name, options) => {
+      commands.set(name, options.handler);
+    },
     appendEntry: () => {},
   };
   createTaskMemoryExtension().factory(pi);
   assert.equal(events.has("context"), false);
-  const entry = { type: "custom", customType: "pi-desktop-task-memory", data: {
-    summary: "目标：继续上一项任务", sourceHash: "hash", modelId: "local/main", summaryChars: 11, sourceChars: 200,
-  } };
+  const entry = {
+    type: "custom",
+    customType: "pi-desktop-task-memory",
+    data: {
+      summary: "目标：继续上一项任务",
+      sourceHash: "hash",
+      modelId: "local/main",
+      summaryChars: 11,
+      sourceChars: 200,
+    },
+  };
   const messages = [
     { role: "user", content: "Original earlier user request" },
     { role: "assistant", content: "Original API reply", stopReason: "stop" },
@@ -37,7 +49,12 @@ test("task memory can be previewed but never changes ordinary provider context",
   const ctx = {
     model: { provider: "anthropic" },
     sessionManager: { getBranch: () => [entry] },
-    ui: { confirm: async (title, content) => { captured.push({ title, content }); return false; } },
+    ui: {
+      confirm: async (title, content) => {
+        captured.push({ title, content });
+        return false;
+      },
+    },
   };
   await events.get("session_start")({}, ctx);
   await commands.get("task-memory-preview")("", ctx);

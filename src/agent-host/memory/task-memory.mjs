@@ -8,8 +8,10 @@ const hash = (value) => createHash("sha256").update(value, "utf8").digest("hex")
 function textOf(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text).join("\n");
+  return content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n");
 }
 
 /** Read an already resolved Pi context, not a JSONL file or a reconstructed alternate branch. */
@@ -27,7 +29,9 @@ export function taskMemorySource(messages) {
   }
   const source = entries.join("\n");
   if (source.length > MAX_MEMORY_SOURCE_CHARS) {
-    throw new Error(`Pi context exceeds ${MAX_MEMORY_SOURCE_CHARS} characters; memory processing stopped without truncation.`);
+    throw new Error(
+      `Pi context exceeds ${MAX_MEMORY_SOURCE_CHARS} characters; memory processing stopped without truncation.`,
+    );
   }
   return source;
 }
@@ -69,7 +73,10 @@ export async function updateTaskMemory(messages, settings, run, previous = null,
         onFailure(id, error);
       }
     }
-    if (!success) throw new Error(`All configured memory models failed; no memory update was delivered. ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    if (!success)
+      throw new Error(
+        `All configured memory models failed; no memory update was delivered. ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      );
   }
   if (!summary) summary = "No completed task history is available yet.";
   return { source, sourceHash, summary, modelId: usedModel, sourceChars: source.length, summaryChars: summary.length };

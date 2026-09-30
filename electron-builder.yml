@@ -28,6 +28,41 @@ files:
   # exclusions Linux asar packaging can hard-link JSON/images twice (EEXIST).
   - "!node_modules/@earendil-works/pi-coding-agent/docs/**/*"
   - "!node_modules/@earendil-works/pi-coding-agent/examples/**/*"
+  # yauzl's fd-slicer requires pend at runtime. The dependency walker can
+  # omit this transitive module when node_modules is a worktree symlink.
+  - from: node_modules/pend
+    to: node_modules/pend
+    filter:
+      - package.json
+      - index.js
+      - LICENSE
+  # The nested Pi AI runtime imports partial-json; include its executable JS.
+  - from: node_modules/partial-json
+    to: node_modules/partial-json
+    filter:
+      - package.json
+      - "dist/**/*.js"
+      - LICENSE
+  # The Feishu SDK's production closure is missed by the worktree symlinked
+  # node_modules dependency collector. Restore only runtime files, not docs/tests.
+  - from: node_modules
+    to: node_modules
+    filter:
+      - "{axios,lodash.identity,lodash.merge,lodash.pickby,protobufjs,qs,ws,follow-redirects,form-data,proxy-from-env,debug,ms,asynckit,combined-stream,delayed-stream,es-define-property,side-channel,side-channel-list,side-channel-map,side-channel-weakmap,call-bind-apply-helpers,call-bound,dunder-proto,es-errors,es-object-atoms,es-set-tostringtag,function-bind,get-intrinsic,get-proto,gopd,has-symbols,has-tostringtag,hasown,long,math-intrinsics,mime-db,mime-types,object-inspect,agent-base}/**/*"
+      - "@protobufjs/{aspromise,base64,codegen,eventemitter,fetch,float,path,pool,utf8}/**/*"
+      - "!**/{test,tests,docs,examples}/**/*"
+      - "!**/*.{md,markdown,ts,tsx,map}"
+      - "!**/*.d.{mts,cts}"
+  - from: node_modules/axios/node_modules/https-proxy-agent
+    to: node_modules/axios/node_modules/https-proxy-agent
+    filter:
+      - package.json
+      - "dist/**/*.js"
+  - from: node_modules/axios/node_modules/agent-base
+    to: node_modules/axios/node_modules/agent-base
+    filter:
+      - package.json
+      - "dist/**/*.js"
   # Pi injects these package-relative paths into the agent system prompt when
   # users ask it to author extensions, packages, SDK integrations, or TUI UI.
   # Restore them after the broad Markdown/TypeScript production exclusions.

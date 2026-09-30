@@ -259,7 +259,20 @@ export function checkArchitecture({ root, policy = {} }) {
         continue;
       }
       if (/\.d\.[cm]?ts$/.test(target)) {
-        failures.push(name + ":" + line + ": runtime import resolves only to a declaration: " + target);
+        const explicitRuntime = /\.[cm]?js$/.test(bare) ? path.resolve(path.dirname(file), bare) : undefined;
+        const sibling =
+          explicitRuntime && fs.existsSync(explicitRuntime) && sourceExtension.test(explicitRuntime)
+            ? relative(fs.realpathSync(explicitRuntime))
+            : undefined;
+        if (!sibling?.startsWith("src/")) {
+          failures.push(name + ":" + line + ": runtime import resolves only to a declaration: " + target);
+          continue;
+        }
+        const fromLayer = layer(name),
+          toLayer = layer(sibling);
+        if (allowedLayers[fromLayer] && !allowedLayers[fromLayer].includes(toLayer)) violation("layer", name, sibling);
+        edges.push({ to: sibling, server: toLayer === "node" });
+        inspect(explicitRuntime);
         continue;
       }
       const fromLayer = layer(name),
