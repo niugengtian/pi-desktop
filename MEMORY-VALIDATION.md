@@ -24,9 +24,20 @@ transcript, credential, browser cookie, or downloaded model is committed.
   the rate-limit fixture uses a controlled clock without relaxing assertions.
 - Memory test process lifecycle: 5 passed. The aggregate budget covers all bounded
   inference stages; timeout waits for child close before profile cleanup.
-- The latest complete quality gate is pending. Earlier failure evidence remains:
-  file-watch smoke timeout, and an oversubscribed terminal startup/rate fixture.
-  Independent file-watch smoke passed; no production watcher behavior changed.
+- Complete final package gate passed: 1,516 unit tests, 1,513 passed, 3 skipped,
+  zero failures; Electron smoke including file watching, Browser Electron
+  integration, and Browser Agent E2E passed. Evidence:
+  `/tmp/pi-final-full-package.log`, `PACKAGE_EXIT=0`.
+- Full application ASAR closure: 171 model runtime packages verified. Root and
+  coding-agent nested OpenAI adapters imported from the final archive; the
+  archive's OpenAI SDK invoked the existing local Qwen model successfully.
+  Evidence: `/tmp/pi-final-packaged-sdk.log`, `SDK_PROBE_EXIT=0`.
+- Signed full application startup probe passed with an isolated HOME/agent
+  profile: renderer and Host ready, Pi 0.87.1, bundled rg/fd healthy.
+  Evidence: `/tmp/pi-final-app-startup.log`, `STARTUP_PROBE_EXIT=0`.
+- Local ad-hoc signature passed strict deep verification; this is not a
+  Developer ID/notarized release. Desktop/provider/adapter installation is
+  staged and preflighted, but not yet applied to the formal running application.
 
 ## Packaging and installation acceptance
 
