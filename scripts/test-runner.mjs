@@ -21,6 +21,10 @@ export function createTestCommand({ timeoutMs = defaultTimeoutMs } = {}) {
     args: [
       "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
       "--test",
+      // Bound file workers: each can compile bundles and spawn native children.
+      // Oversubscribing a desktop running local inference invalidates the
+      // process-fixture timing assumptions without testing more behavior.
+      "--test-concurrency=2",
       `--test-timeout=${timeoutMs}`,
       "src/**/*.test.mjs",
       "scripts/**/*.test.mjs",

@@ -70,11 +70,11 @@ async function waitFor<T>(
   while (Date.now() < deadline) {
     try {
       const value = await read();
-      if (ok(value)) return value;
       last = value;
     } catch (error) {
       last = error;
     }
+    if (!(last instanceof Error) && ok(last as T)) return last as T;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`Timed out waiting for ${label}: ${last instanceof Error ? last.message : JSON.stringify(last)}`);
@@ -197,6 +197,7 @@ async function run() {
     await host.call("memoryE2e.configure", { sessionId });
   }
 
+  const beforeWarm = await host.call<Status>("memoryE2e.status", { sessionId });
   // A long *fictional* current turn forces older projected entries into warm.
   // Nothing here is read from the user's actual Pi sessions.
   await host.call(
@@ -210,7 +211,17 @@ async function run() {
   const warmed = await waitFor<Status>(
     "warm promotion",
     () => host!.call("memoryE2e.status", { sessionId }),
-    (v) => v.memoryEntries.some((e) => e.path.startsWith("warm/")) && !v.isRunning && !v.isStreaming,
+    (v) => {
+      if (
+        !v.isRunning &&
+        !v.isStreaming &&
+        (v.assistantTexts.length > beforeWarm.assistantTexts.length ||
+          v.assistantErrors.length > beforeWarm.assistantErrors.length) &&
+        !v.memoryEntries.some((e) => e.path.startsWith("warm/"))
+      )
+        throw new Error(`Warm promotion ended without a warm stage: ${JSON.stringify(v)}`);
+      return v.memoryEntries.some((e) => e.path.startsWith("warm/")) && !v.isRunning && !v.isStreaming;
+    },
   );
   const warm = warmed.memoryEntries.findLast((e) => e.path.startsWith("warm/"))!;
   const warmFile = path.join(vault, warm.path);

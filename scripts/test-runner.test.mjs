@@ -13,6 +13,7 @@ test("test discovery includes source and script tests and applies a per-test tim
   assert.deepEqual(command.args, [
     "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
     "--test",
+    "--test-concurrency=2",
     "--test-timeout=4567",
     "src/**/*.test.mjs",
     "scripts/**/*.test.mjs",

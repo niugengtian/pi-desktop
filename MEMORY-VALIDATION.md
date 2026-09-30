@@ -1,40 +1,43 @@
-# Memory delivery development snapshot
+# Memory delivery candidate validation
 
-This branch is a development candidate, not an installed or release-ready build.
-No raw user session, credential, browser cookie or downloaded model is included.
+This is a development candidate until the complete gate and packaged runtime
+probes pass. The formal application has not yet been replaced. No real user
+transcript, credential, browser cookie, or downloaded model is committed.
 
 ## Recorded checks
 
-- Desktop memory/Ollama/UI-state targeted suite: 49 tests passed.
-- Repository unit suite: 1,504 tests, 1,501 passed and 3 skipped.
-- Browser Agent authorization E2E passed independently after the fictional
-  provider's window was made consistent with the conservative unknown-usage
-  budget. Permission checks were not weakened.
-- Fictional Electron/Agent Host memory E2E passed before the latest recovery
-  changes: local Ollama, hot/warm Markdown, exact preview, real Page Provider
-  registration against a fake bridge, Host restart and manual edit protection.
-- Companion Page Provider: 49 tests passed, including receipt propagation and
-  recovery capability checks against a fake bridge.
-- Companion ChatGPT/DeepSeek targeted adapters: 160 tests passed. This is not
-  proof that the user's live pending-desktop incident has been resolved.
-- Static checks, architecture, unit and build stages passed in the latest full
-  gate, but Electron smoke timed out waiting for `files.changed`. The complete
-  gate is therefore still **failed**, not release-ready.
+- Desktop memory/Ollama/UI-state targeted suite: 49 passed.
+- ChatGPT/DeepSeek adapter suites: 275 passed. Regression fixtures cover rendered
+  line breaks, block boundaries, decorative ellipsis, and recovery-only behavior.
+- Same-page read-only investigation found the existing completed ChatGPT reply.
+  The old extractor joined line/block boundaries; the corrected extractor
+  associated the existing reply. No original question was resent or refreshed.
+  This is not an installed Desktop end-to-end acceptance result.
+- Page Provider targeted suite: 49 passed against a fake bridge.
+- SDK packaging fix `a8cc21e` integrated as `55b84b3`; 9 related tests passed.
+  Existing node-pty dependencies were retained when resolving the cherry-pick.
+- Final isolated memory E2E passed: local Ollama, hot/warm Markdown, exact Desktop
+  approval, real Page Provider registration against a fake bridge, Host restart
+  with unchanged cursor, source search/open, and manual edit preservation.
+  Evidence: `/tmp/pi-memory-sdk-integrated-e2e.log`, `MEMORY_E2E_EXIT=0`.
+- Test-runner/terminal targeted regression: 17 passed. File workers are bounded;
+  the rate-limit fixture uses a controlled clock without relaxing assertions.
+- Memory test process lifecycle: 5 passed. The aggregate budget covers all bounded
+  inference stages; timeout waits for child close before profile cleanup.
+- The latest complete quality gate is pending. Earlier failure evidence remains:
+  file-watch smoke timeout, and an oversubscribed terminal startup/rate fixture.
+  Independent file-watch smoke passed; no production watcher behavior changed.
 
-## Implemented but not installed
+## Packaging and installation acceptance
 
-Opt-in Ollama startup reuses a running loopback service, never installs/downloads
-models, and tracks/cleans only app-owned process groups. Web retry intent survives
-curated context through a one-shot receipt. `turn.recover` requires a bound remote
-conversation and a capable adapter; missing/ambiguous replies refuse resubmission.
+Keep the beforePack dependency-closure restoration and afterPack archive-only
+resolution/version checks. Build the complete application, not the minimal SDK
+packaging fixture. Independently import root and nested model adapters from its
+ASAR and invoke the existing local model. Then verify signatures and perform a
+backed-up, atomic desktop/provider/adapter replacement with rollback.
 
-## Remaining work
+Opt-in Ollama startup never installs/downloads models and cleans only app-owned
+process groups. Recovery requires a bound conversation and capable adapter;
+missing or ambiguous replies refuse resubmission.
 
-1. Diagnose the file-watch smoke failure and rerun the complete quality gate.
-2. Obtain same-page evidence for the live ChatGPT result-recovery failure without
-   sending the original question again.
-3. Rerun memory E2E against the final source, build/sign/probe a candidate, and
-   install desktop/provider/adapter updates with backups and rollback.
-
-QMD is optional and deferred; local keyword search is the current baseline.
-Ego Lite shared-space alignment remains a follow-up.
+QMD remains optional and deferred. Ego Lite shared-space alignment is follow-up.

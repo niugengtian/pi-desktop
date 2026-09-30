@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import nodeTest from "node:test";
 import { importTestBundle } from "#test-bundle";
 
@@ -56,8 +57,8 @@ function descriptor(executable) {
 }
 
 async function waitFor(predicate, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
     const value = predicate();
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -170,28 +171,36 @@ test("terminal control is single-owner and rate-limits renderer input", async (t
     (error) => error.code === "HERDR_TERMINAL_BUSY",
   );
   const block = new Uint8Array(64 * 1024);
-  for (let index = 0; index < 4; index += 1) {
-    first.input(block);
-    await waitFor(() => {
-      try {
-        return (
-          readFileSync(commandLogPath, "utf8")
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line))
-            .filter((command) => command.type === "terminal.input").length >=
-          index + 1
-        );
-      } catch {
-        return false;
-      }
-    });
-    await new Promise((resolve) => setImmediate(resolve));
+  // Keep all writes in one rate window even when child I/O is scheduled slowly.
+  // Polling deadlines use a separate monotonic clock and remain bounded.
+  const instant = Date.now();
+  const rateClock = t.mock.method(Date, "now", () => instant);
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      first.input(block);
+      await waitFor(() => {
+        try {
+          return (
+            readFileSync(commandLogPath, "utf8")
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+              .filter((command) => command.type === "terminal.input").length >=
+            index + 1
+          );
+        } catch {
+          return false;
+        }
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.throws(
+      () => first.input(block),
+      (error) => error.code === "HERDR_PROTOCOL_LIMIT_EXCEEDED",
+    );
+  } finally {
+    rateClock.mock.restore();
   }
-  assert.throws(
-    () => first.input(block),
-    (error) => error.code === "HERDR_PROTOCOL_LIMIT_EXCEEDED",
-  );
   const replacement = await registry.open(descriptor(executable), "w1:p1", "control", 80, 24, true);
   assert.notEqual(replacement.terminalId, first.terminalId);
 });

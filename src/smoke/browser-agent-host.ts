@@ -34,6 +34,7 @@ const stopHandlers = registerHandlers(server);
 const stopWatcher = startSessionWatcher(server);
 const fauxBySession = new Map<string, FauxCore>();
 const memoryNotifications = new Map<string, string[]>();
+const memorySubscriptions = new Map<string, () => void>();
 
 function log(message: string): void {
   process.parentPort?.postMessage({ type: "log", message: `[browser-agent-e2e] ${message}` });
@@ -460,7 +461,10 @@ server.handle({
       baseUrl: "http://127.0.0.1:0",
       api: provider,
       apiKey: "fixture-only",
-      streamSimple: faux.streamSimple,
+      streamSimple: (model, context, options) => {
+        console.error("[memory-fixture] fictional API stream invoked", context.messages.length);
+        return faux.streamSimple(model, context, options);
+      },
       models: [
         {
           id: modelId,
@@ -476,10 +480,13 @@ server.handle({
     });
     const notifications: string[] = [];
     memoryNotifications.set(sessionId!, notifications);
-    session.onEvent((event) => {
+    memorySubscriptions.get(sessionId!)?.();
+    const unsubscribe = session.onEvent((event) => {
       const request = event as { type?: string; id?: string; title?: string; method?: string; message?: string };
-      if (request.type === "extension_ui_request" && request.method === "notify" && request.message)
+      if (request.type === "extension_ui_request" && request.method === "notify" && request.message) {
         notifications.push(request.message);
+        console.error("[memory-fixture] notice", request.message);
+      }
       // This listener belongs only to the isolated fictional fixture; never
       // auto-approve a real user's session or a preview command.
       if (
@@ -488,7 +495,7 @@ server.handle({
         request.id &&
         request.title?.startsWith("Approve memory delivery")
       ) {
-        console.error("[memory-fixture] exact Desktop approval requested");
+        console.error("[memory-fixture] exact Desktop approval requested", request.title);
         notifications.push("fictional-delivery-approved");
         void session.send({ type: "extension_ui_response", id: request.id, confirmed: true });
       } else if (
@@ -502,6 +509,7 @@ server.handle({
         void session.send({ type: "extension_ui_response", id: request.id, confirmed: false });
       }
     });
+    memorySubscriptions.set(sessionId!, unsubscribe);
     await session.send({ type: "set_model", provider, modelId });
     return { provider, modelId };
   },

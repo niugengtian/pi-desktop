@@ -4,12 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import {
-  createProjectBuildTemp,
-  projectNodePath,
-  resolveElectronBinary,
-  terminateProcessTree,
-} from "./process-utils.mjs";
+import { createProjectBuildTemp, projectNodePath, resolveElectronBinary } from "./process-utils.mjs";
+import { waitForMemoryFixture } from "./memory-e2e-process.mjs";
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temp = createProjectBuildTemp(project, "pi-memory-e2e-");
@@ -53,22 +49,7 @@ try {
       PI_MEMORY_E2E_HOST_ENTRY: host,
     },
   });
-  process.exitCode = await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      console.error("Memory E2E timed out");
-      terminateProcessTree(child);
-      resolve(1);
-    }, 170_000);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      console.error(error);
-      resolve(1);
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      resolve(code ?? 1);
-    });
-  });
+  process.exitCode = await waitForMemoryFixture(child);
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
