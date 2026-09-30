@@ -117,6 +117,10 @@ files:
       - "dist/**/*.d.ts"
 
 asar: true
+# Fail packaging if a lazy model API (including Ollama's OpenAI interface)
+# cannot resolve its SDK or transitive runtime dependencies inside the ASAR.
+beforePack: scripts/prepare-model-runtime-packaging.mjs
+afterPack: scripts/verify-packaged-model-dependencies.mjs
 
 # Signed runtime catalogs plus the current target's small core search tools.
 # Managed Node/Python/Git archives remain download-on-consent and are never shipped.
