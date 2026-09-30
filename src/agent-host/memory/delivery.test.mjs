@@ -174,6 +174,32 @@ test("an edit while the exact preview is open invalidates the approval", async (
   );
 });
 
+test("API handoff preserves the current system/tool state, including later tool deltas", async (t) => {
+  const options = await setup(t);
+  const oldTool = { name: "old", description: "old tool", parameters: {} };
+  const newTool = { name: "new", description: "new tool", parameters: {} };
+  const messages = [...options.context.messages];
+  messages[0] = { role: "system", content: "Current API base", toolsAdded: [oldTool], timestamp: 0 };
+  messages.splice(4, 0, {
+    role: "system",
+    content: "Current API delta",
+    toolsRemoved: [{ name: "old" }],
+    toolsAdded: [newTool],
+    sections: { policy: "latest" },
+    timestamp: 1,
+  });
+  const result = await prepareMemoryDelivery({
+    ...options,
+    model: { ...model, provider: "api", api: "openai-completions" },
+    context: { messages },
+    approve: async () => true,
+  });
+  assert.equal(result.context.messages[0].content, "Current API base\n\nCurrent API delta");
+  assert.deepEqual(result.context.messages[0].toolsAdded, [newTool]);
+  assert.equal(result.context.messages[0].sections.policy, "latest");
+  assert.equal(result.context.messages.length, 2);
+});
+
 test("same API/model under budget uses the unmodified Pi context without confirmation", async (t) => {
   const options = await setup(t);
   const apiModel = { ...model, provider: "api", api: "openai-completions" };

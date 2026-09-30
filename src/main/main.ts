@@ -44,6 +44,7 @@ import type { ManagedProcessCapability } from "../contract/processes";
 import { projectManagedProcessCapability } from "./managed-process/capability";
 import { runPackagedCleanupFaultValidation } from "./packaged-cleanup-fault-validation";
 import { HerdrRuntimeManager } from "./herdr/runtime-manager";
+import { OllamaService } from "./ollama-service";
 import { resolveBundledHerdrRoot, resolveHerdrCatalogPath } from "./herdr/catalog";
 import { isHerdrSettings } from "../contract/herdr";
 import { discoverHerdrAgentClis, type HerdrAgentCliDiscoverySnapshot } from "./herdr/agent-cli-discovery";
@@ -82,6 +83,7 @@ let browserService: BrowserService | null = null;
 let managedProcessReaper: ManagedProcessReaper | null = null;
 let windowsManagedProcessHelper: WindowsManagedProcessHelperResolution | null = null;
 let herdrRuntimeManager: HerdrRuntimeManager | null = null;
+let ollamaService: OllamaService | null = null;
 let herdrAgentCliDiscovery: HerdrAgentCliDiscoverySnapshot | null = null;
 let isQuitting = false;
 let unreadBadge = 0;
@@ -504,6 +506,10 @@ function startMainProcess(): void {
       onCapabilitySnapshot: (snapshot) => hostManager?.setBrowserCapabilitySnapshot(snapshot),
     });
     const ui = loadUiState();
+    ollamaService = new OllamaService({ reaper: managedProcessReaper, log: appendMainLog });
+    void ollamaService
+      .configure(ui.ollamaAutoStart === true)
+      .catch((error) => appendMainLog(`Ollama auto-start: ${String(error)}`));
     await refreshHerdrAgentCliDiscovery();
     herdrRuntimeManager = new HerdrRuntimeManager({
       userDataDir: app.getPath("userData"),
@@ -563,9 +569,12 @@ function startMainProcess(): void {
         isQuitting = true;
         destroyTray();
         const deadline = Date.now() + MANAGED_PROCESS_SHUTDOWN_DEADLINE_MS;
-        const herdrCleanup = beforeDeadline(herdrRuntimeManager?.stopManagedServer() ?? Promise.resolve(), deadline);
+        const localCleanup = beforeDeadline(
+          Promise.all([herdrRuntimeManager?.stopManagedServer(), ollamaService?.stop()]),
+          deadline,
+        );
         await cleanupManagedProcesses(deadline, true);
-        if (!(await herdrCleanup).completed) throw new Error("Managed Herdr server cleanup timed out before update");
+        if (!(await localCleanup).completed) throw new Error("App-owned local server cleanup timed out before update");
         if (process.platform === "win32") {
           const refreshed = resolveWindowsManagedProcessHelper({
             isPackaged: app.isPackaged,
@@ -692,7 +701,8 @@ function startMainProcess(): void {
         credentialVault.set(`channel:${payload.channel}:${payload.accountId}`, payload.credential),
       getBrowserService: () => browserService,
       getManagedProcessCapability,
-      onUiStatePatch: (patch) => {
+      onUiStatePatch: async (patch) => {
+        if (typeof patch.ollamaAutoStart === "boolean") await ollamaService!.configure(patch.ollamaAutoStart);
         if (patch.language) {
           updateTrayMenu(getMainWindow);
           installAppMenu(getMainWindow, () => openUpdateSettings(true), isDev);
@@ -943,7 +953,7 @@ function startMainProcess(): void {
       const deadline = Date.now() + MANAGED_PROCESS_SHUTDOWN_DEADLINE_MS;
       try {
         const herdrCleanupPromise = beforeDeadline(
-          herdrRuntimeManager?.stopManagedServer() ?? Promise.resolve(),
+          Promise.all([herdrRuntimeManager?.stopManagedServer(), ollamaService?.stop()]),
           deadline,
         );
         await cleanupManagedProcesses(deadline, false);

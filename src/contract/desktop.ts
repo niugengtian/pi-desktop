@@ -125,6 +125,7 @@ export interface DesktopUiState {
   language?: AppLanguage;
   backgroundMode?: boolean;
   managedProcessesEnabled?: boolean;
+  ollamaAutoStart?: boolean;
   chatAppearance?: ChatAppearancePreferences;
   herdrSettings?: HerdrSettings;
 }

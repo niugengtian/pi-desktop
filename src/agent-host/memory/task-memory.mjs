@@ -4,6 +4,7 @@ import {
   deduplicateMemoryParagraphs,
   memoryTextKey,
   normalizeMemorySummary,
+  failedMemoryMessages,
 } from "./normalize.mjs";
 
 export const MAX_MEMORY_SOURCE_CHARS = 120_000;
@@ -27,7 +28,9 @@ export function taskMemorySource(messages) {
   const completed = lastUser >= 0 ? messages.slice(0, lastUser) : messages;
   const entries = [];
   const seen = new Set();
+  const failed = failedMemoryMessages(messages);
   for (const message of completed) {
+    if (failed.has(message)) continue;
     if (!["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes(message?.role)) continue;
     if (message.role === "assistant" && message.stopReason && message.stopReason !== "stop") continue;
     const raw = textOf(message.content ?? message.summary ?? message.text);

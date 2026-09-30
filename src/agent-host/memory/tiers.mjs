@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { canonicalMemoryText } from "./normalize.mjs";
+import { canonicalMemoryText, failedMemoryMessages } from "./normalize.mjs";
 
 const digest = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 const MAX_CANDIDATE_CHARS = 120_000;
@@ -9,12 +9,14 @@ const MAX_HOT_CHARS = 12_000;
 export function memoryCandidates(projection, { sessionId, branchLeafId }) {
   if (!sessionId || !branchLeafId || !Array.isArray(projection?.entries))
     throw new Error("A projected Pi branch and its provenance are required.");
+  const failed = failedMemoryMessages(projection.entries.flatMap((entry) => entry.messages ?? []));
   const candidates = [];
   let totalChars = 0;
   for (const item of projection.entries) {
     const entry = item?.sourceEntry;
     if (!entry?.id || !Array.isArray(item.messages)) throw new Error("Invalid Pi projection; no memory was promoted.");
     for (const message of item.messages) {
+      if (failed.has(message)) continue;
       if (!["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes(message?.role)) continue;
       if (message.role === "assistant" && message.stopReason && message.stopReason !== "stop") continue;
       const content = message.content ?? message.summary ?? message.text;
@@ -28,11 +30,11 @@ export function memoryCandidates(projection, { sessionId, branchLeafId }) {
                 .join("\n")
             : "";
       if (!text || text.includes("PAGE_PROVIDER_TURN_UNCONFIRMED")) continue;
-      totalChars += text.length;
-      if (totalChars > MAX_CANDIDATE_CHARS)
-        throw new Error("Memory source exceeds the configured limit; nothing was promoted.");
       const cleanText = canonicalMemoryText(text, message.role);
       if (!cleanText) continue;
+      totalChars += cleanText.length;
+      if (totalChars > MAX_CANDIDATE_CHARS)
+        throw new Error("Memory source exceeds the configured limit; nothing was promoted.");
       candidates.push({
         id: `${sessionId}:${entry.id}`,
         sessionId,

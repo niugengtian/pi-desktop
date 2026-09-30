@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { call } from "@/lib/api-client";
 import type { MemoryModelSettings } from "@shared/memory-model";
+import { useI18n } from "@/i18n";
 
 export function MemoryModelConfig() {
+  const { t } = useI18n();
+  const [ollamaAutoStart, setOllamaAutoStart] = useState(false);
   const [settings, setSettings] = useState<MemoryModelSettings | null>(null);
   const [version, setVersion] = useState("");
   const [models, setModels] = useState<string[]>([]);
@@ -12,11 +15,16 @@ export function MemoryModelConfig() {
 
   useEffect(() => {
     let live = true;
-    void Promise.all([call("memoryModel.get"), call("modelsConfig.get")])
-      .then(([snapshot, modelConfig]) => {
+    void Promise.all([
+      call("memoryModel.get"),
+      call("modelsConfig.get"),
+      window.piBridge?.getUiState() ?? Promise.resolve({ ollamaAutoStart: false }),
+    ])
+      .then(([snapshot, modelConfig, ui]) => {
         if (!live) return;
         setSettings(snapshot.settings);
         setVersion(snapshot.version);
+        setOllamaAutoStart(ui.ollamaAutoStart === true);
         const providers = modelConfig.config.providers;
         if (!providers || typeof providers !== "object") return;
         const choices: string[] = [];
@@ -59,6 +67,20 @@ export function MemoryModelConfig() {
     }
   }
 
+  async function toggleOllama(next: boolean) {
+    if (!window.piBridge) return;
+    setBusy(true);
+    setMessage("");
+    setOllamaAutoStart(next);
+    try {
+      await window.piBridge.setUiState({ ollamaAutoStart: next });
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function check(model: string) {
     if (!model) return;
     setProbe((current) => ({ ...current, [model]: "Checking…" }));
@@ -78,10 +100,34 @@ export function MemoryModelConfig() {
     <section style={{ padding: 24, overflowY: "auto", width: "100%", maxWidth: 760, lineHeight: 1.6 }}>
       <h2 style={{ marginTop: 0 }}>Independent task memory</h2>
       <p>
-        Task memory is independent of the active chat model and OpenResty. Local summaries can be prepared after
-        completed turns and previewed. They are not automatically injected into API or Web requests; provider-switch and
-        context-budget delivery rules are not connected yet.
+        {t(
+          "memoryDeliveryDescription",
+          "Memory processing is independent of the chat model. Completed effective-branch turns produce local hot/warm Markdown. Model switches and budget pressure require an exact approval; Web always requires approval.",
+        )}
       </p>
+      <label style={{ display: "block", marginBottom: 12 }}>
+        <input
+          type="checkbox"
+          checked={ollamaAutoStart}
+          disabled={busy || !window.piBridge || window.piBridge.platform === "win32"}
+          onChange={(event) => void toggleOllama(event.target.checked)}
+        />{" "}
+        {t("ollamaAutoStart", "Start local Ollama with the App (off by default)")}
+      </label>
+      <p>
+        {t(
+          "ollamaAutoStartDescription",
+          "Reuse a running local Ollama, or start an existing installation on 127.0.0.1:11434. No model download. App exit stops only the app-owned process; external Ollama stays running. Use Check health to verify availability.",
+        )}
+      </p>
+      {window.piBridge?.platform === "win32" && (
+        <p>
+          {t(
+            "ollamaAutoStartUnsupported",
+            "On Windows, start Ollama externally; app-owned auto-start currently supports macOS/Linux.",
+          )}
+        </p>
+      )}
       <label style={{ display: "block", marginBottom: 20 }}>
         <input
           type="checkbox"
@@ -91,9 +137,10 @@ export function MemoryModelConfig() {
         Enable independent memory (on by default)
       </label>
       <p>
-        Only registered loopback models are allowed for memory processing. Primary failure alerts locally and tries your
-        configured backup. If both fail, no new memory is delivered. Ordinary API messages remain unchanged; Web handoff
-        is not enabled yet.
+        {t(
+          "memoryFailureDescription",
+          "Only explicitly configured loopback models process memory. A primary failure tries your configured backup and reports locally. Cancellation, stale memory or failure never falls back to sending raw history. Normal same-model API/tool continuation stays unchanged when within budget.",
+        )}
       </p>
       <datalist id="memory-local-models">
         {models.map((id) => (
@@ -129,9 +176,10 @@ export function MemoryModelConfig() {
       </button>
       {message && <p role="status">{message}</p>}
       <p>
-        Run <code>/task-memory-preview</code> to inspect the last local summary. Three-tier promotion, conditional
-        API/Web delivery, and Feishu alert delivery are not connected yet. Sending any summary to a provider would be
-        external traffic.
+        {t(
+          "memoryCommandsDescription",
+          "Use /task-memory-preview, /task-memory-refresh and /task-memory-search (or cold QUERY) locally. Sending an approved summary to an external provider is still external traffic. QMD is optional and deferred.",
+        )}
       </p>
     </section>
   );

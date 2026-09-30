@@ -41,6 +41,15 @@ test("renderer UI state rejects unknown fields and malformed background mode", (
   assert.throws(() => validateDesktopUiStatePatch({ managedProcessesEnabled: "yes" }), /must be a boolean/);
 });
 
+test("Ollama auto-start is opt-in and accepts no command or endpoint from the renderer", () => {
+  assert.deepEqual(validateDesktopUiStatePatch({}), {});
+  for (const ollamaAutoStart of [true, false])
+    assert.deepEqual(validateDesktopUiStatePatch({ ollamaAutoStart }), { ollamaAutoStart });
+  for (const ollamaAutoStart of ["true", 1, null, {}])
+    assert.throws(() => validateDesktopUiStatePatch({ ollamaAutoStart }), /boolean/);
+  assert.throws(() => validateDesktopUiStatePatch({ ollamaBinary: "/tmp/untrusted" }), /Unsupported/);
+});
+
 test("language preference permits only supported locales across the IPC boundary", () => {
   for (const language of ["en-US", "zh-CN", "zh-TW"]) {
     assert.deepEqual(validateDesktopUiStatePatch({ language }), { language });

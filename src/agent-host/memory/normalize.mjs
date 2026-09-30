@@ -46,6 +46,30 @@ export function deduplicateMemoryParagraphs(value) {
     .join("\n\n");
 }
 
+export function failedMemoryMessages(messages) {
+  const blocked = new Set();
+  let turn = [];
+  for (const message of messages) {
+    if (message?.role === "user" || turn.length) turn.push(message);
+    if (message?.role !== "assistant") continue;
+    const content =
+      typeof message.content === "string"
+        ? message.content
+        : (message.content ?? [])
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+    if (
+      ["error", "aborted"].includes(message.stopReason) ||
+      content.trimStart().startsWith("<!-- PAGE_PROVIDER_TURN_UNCONFIRMED -->")
+    ) {
+      for (const item of turn) blocked.add(item);
+      turn = [];
+    } else if (message.stopReason === "stop" || !message.stopReason) turn = [];
+  }
+  return blocked;
+}
+
 export function memoryTextKey(role, text) {
   return JSON.stringify([role, text.replace(/\s+/gu, " ").trim()]);
 }

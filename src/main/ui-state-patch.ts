@@ -7,6 +7,7 @@ const RENDERER_WRITABLE_UI_STATE_FIELDS = new Set([
   "language",
   "backgroundMode",
   "managedProcessesEnabled",
+  "ollamaAutoStart",
   "chatAppearance",
   "herdrSettings",
 ]);
@@ -32,6 +33,10 @@ export function validateDesktopUiStatePatch(value: unknown): DesktopUiStatePatch
       throw new Error("Managed processes setting must be a boolean");
     }
     validated.managedProcessesEnabled = patch.managedProcessesEnabled;
+  }
+  if ("ollamaAutoStart" in patch) {
+    if (typeof patch.ollamaAutoStart !== "boolean") throw new Error("Ollama auto-start must be a boolean");
+    validated.ollamaAutoStart = patch.ollamaAutoStart;
   }
   if ("chatAppearance" in patch) {
     if (!isChatAppearancePreferences(patch.chatAppearance)) throw new Error("Invalid chat appearance preferences");

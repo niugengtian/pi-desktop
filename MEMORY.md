@@ -34,6 +34,20 @@ Web prompts are capped at 24,000 characters. The Page Provider update must accom
 the Desktop update: its one-shot receipt validates the target/session/prompt hash
 and prevents another checkpoint/context envelope being appended.
 
+## Recovery and Ollama lifecycle
+
+Retrying the same unconfirmed Web request carries recovery-only intent separately
+from the outbound text. The companion bridge uses `turn.recover`, verifies adapter
+capability and a bound conversation, and never falls back to submitting the prompt.
+Collapsed/ambiguous or missing replies fail closed rather than returning another
+turn or resending the question. Failed turns' user/tool fragments are excluded from
+local promotion along with their failed assistant result.
+
+The Memory settings page has an opt-in Ollama auto-start switch. On macOS/Linux,
+Pi probes only `127.0.0.1:11434`, reuses an external service or starts an existing
+Ollama installation with cloud disabled. It never downloads models and cleans up
+only its own registered process group. Windows still requires external startup.
+
 ## Optional QMD
 
 Set `PI_DESKTOP_QMD_MODULE` to an explicitly installed absolute QMD SDK entry path.

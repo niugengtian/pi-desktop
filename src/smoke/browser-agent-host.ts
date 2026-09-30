@@ -381,7 +381,10 @@ server.handle({
           reasoning: false,
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 32_000,
+          // Browser E2E exercises authorization/tool lifecycle, not a tiny
+          // model window. Its real system/tool declarations must fit the
+          // request guard's conservative serialized-byte estimate.
+          contextWindow: 128_000,
           maxTokens: 2_048,
         },
       ],

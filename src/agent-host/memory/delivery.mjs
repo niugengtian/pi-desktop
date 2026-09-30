@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import { normalizeContext, getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { memoryCandidates, memoryCursor, planMemoryDelivery, splitMemoryTiers } from "./tiers.mjs";
 import { openMemoryMarkdown } from "./markdown-store.mjs";
 import { canonicalMemoryText, memoryTextKey, normalizeMemorySummary } from "./normalize.mjs";
@@ -69,6 +69,17 @@ export async function prepareMemoryDelivery({
   )
     throw new Error("Staged delivery cannot drop an in-flight tool exchange; nothing was sent.");
   const request = canonicalMemoryText(textOf(latest.content));
+  const earlier = context.messages.slice(0, context.messages.lastIndexOf(latest));
+  const previousIndex = earlier.findLastIndex((message) => message.role === "assistant");
+  const previous = earlier[previousIndex];
+  const previousUser = earlier.slice(0, previousIndex).findLast((message) => message.role === "user");
+  const recoverOnly =
+    web &&
+    previous?.provider === model.provider &&
+    previous?.model === model.id &&
+    textOf(previous.content).trimStart().startsWith("<!-- PAGE_PROVIDER_TURN_UNCONFIRMED -->") &&
+    canonicalMemoryText(textOf(previousUser?.content)) === request;
+  if (recoverOnly) plan.reason = "web-recovery-only";
   const projection = buildSessionProjection(entries, branchLeafId);
   const candidates = memoryCandidates(projection, { sessionId, branchLeafId });
   if (candidates.at(-1)?.role === "user") candidates.pop();
@@ -105,7 +116,7 @@ export async function prepareMemoryDelivery({
   if (body.length > 24_000) throw new Error("Web-sized memory exceeds 24000 characters; nothing was sent.");
   const system = web
     ? { role: "system", content: WEB_HANDOFF_PROMPT, timestamp: 0 }
-    : context.messages.find((message) => message.role === "system");
+    : getCurrentSystemMessage(context.messages);
   if (!system) throw new Error("Current API system/tool declaration is unavailable.");
   // Build fresh rather than copying raw Context fields/alternate histories.
   // For APIs the system transcript already carries current tool declarations.
@@ -139,6 +150,7 @@ export async function prepareMemoryDelivery({
       fingerprint,
       promptHash: hash(body),
       requestText: request,
+      recoverOnly,
       sourceFingerprint: ledger?.branchCursor?.fingerprint ?? null,
     },
   };

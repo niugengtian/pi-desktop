@@ -26,6 +26,7 @@ export declare function prepareMemoryDelivery(options: {
     fingerprint: string;
     promptHash: string;
     requestText: string;
+    recoverOnly: boolean;
     sourceFingerprint: string | null;
   } | null;
 }>;

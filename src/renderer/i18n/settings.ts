@@ -1,5 +1,16 @@
 // Translation entries owned by the settings domain.
 export const enUS: Record<string, string> = {
+  ollamaAutoStart: "Start local Ollama with the App (off by default)",
+  ollamaAutoStartDescription:
+    "Reuse a running local Ollama, or start an existing installation on 127.0.0.1:11434. No model download. App exit stops only the app-owned process; external Ollama stays running. Use Check health to verify availability.",
+  ollamaAutoStartUnsupported:
+    "On Windows, start Ollama externally; app-owned auto-start currently supports macOS/Linux.",
+  memoryDeliveryDescription:
+    "Memory processing is independent of the chat model. Completed effective-branch turns produce local hot/warm Markdown. Model switches and budget pressure require an exact approval; Web always requires approval.",
+  memoryFailureDescription:
+    "Only explicitly configured loopback models process memory. A primary failure tries your configured backup and reports locally. Cancellation, stale memory or failure never falls back to sending raw history. Normal same-model API/tool continuation stays unchanged when within budget.",
+  memoryCommandsDescription:
+    "Use /task-memory-preview, /task-memory-refresh and /task-memory-search (or cold QUERY) locally. Sending an approved summary to an external provider is still external traffic. QMD is optional and deferred.",
   about: "About",
   aboutDescription: "App, Pi, and project information.",
   appearance: "Appearance",
@@ -213,6 +224,16 @@ export const enUS: Record<string, string> = {
 };
 
 export const zhCN: Record<string, string> = {
+  ollamaAutoStart: "随 App 启动本地 Ollama（默认关闭）",
+  ollamaAutoStartDescription:
+    "优先复用正在运行的本地 Ollama；否则启动已有安装，仅监听 127.0.0.1:11434。不下载模型。退出 App 只停止本应用启动的进程，不停止外部 Ollama。可用健康检查确认服务可用。",
+  ollamaAutoStartUnsupported: "Windows 请在外部启动 Ollama；本应用自动启动暂支持 macOS/Linux。",
+  memoryDeliveryDescription:
+    "记忆处理独立于聊天模型，从当前有效分支的已完成回合生成热／温层 Markdown。切换模型或预算压力下需精确审批；Web 每次都需审批。",
+  memoryFailureDescription:
+    "仅使用显式配置的回环本地模型；主模型失败后尝试已配置备份并本地提示。取消、过期记忆或失败都不会回退外发原始历史。同模型、预算内的 API 与工具续轮保持原上下文。",
+  memoryCommandsDescription:
+    "可本地运行 /task-memory-preview、/task-memory-refresh 和 /task-memory-search（或 cold QUERY）。向外部模型发送已审批摘要仍属于外部流量。QMD 可选，目前暂缓安装。",
   about: "关于",
   aboutDescription: "了解应用版本、Pi 版本和项目信息。",
   appearance: "外观",
@@ -415,6 +436,16 @@ export const zhCN: Record<string, string> = {
 };
 
 export const zhTW: Record<string, string> = {
+  ollamaAutoStart: "隨 App 啟動本機 Ollama（預設關閉）",
+  ollamaAutoStartDescription:
+    "優先重用正在執行的本機 Ollama；否則啟動既有安裝，僅監聽 127.0.0.1:11434。不下載模型。退出 App 只停止本應用啟動的程序，不停止外部 Ollama。可用健康檢查確認服務可用。",
+  ollamaAutoStartUnsupported: "Windows 請在外部啟動 Ollama；本應用自動啟動暫支援 macOS/Linux。",
+  memoryDeliveryDescription:
+    "記憶處理獨立於聊天模型，從目前有效分支的已完成回合產生熱／溫層 Markdown。切換模型或預算壓力下需精確審批；Web 每次都需審批。",
+  memoryFailureDescription:
+    "僅使用明確設定的回環本機模型；主模型失敗後嘗試已設定備份並在本機提示。取消、過期記憶或失敗都不會回退外送原始歷史。同模型、預算內的 API 與工具續輪保留原上下文。",
+  memoryCommandsDescription:
+    "可在本機執行 /task-memory-preview、/task-memory-refresh 和 /task-memory-search（或 cold QUERY）。向外部模型傳送已審批摘要仍屬於外部流量。QMD 可選，目前暫緩安裝。",
   about: "關於",
   aboutDescription: "了解應用程式版本、Pi 版本與專案資訊。",
   appearance: "外觀",
