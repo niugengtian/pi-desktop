@@ -112,6 +112,17 @@ for (const expression of ['import("node:fs")', 'require("fs")']) {
   });
 }
 
+test("the explicit QMD SDK capability is narrow and never renderer-reachable", (t) => {
+  const loader =
+    "import { pathToFileURL } from 'node:url'; export const load = file => import(pathToFileURL(file).href);";
+  const entry = fixture(t, { "src/agent-host/memory/qmd.mjs": loader });
+  assert.equal(entry.run().failures.length, 0);
+  entry.write("src/renderer/view.ts", "export { load } from '../agent-host/memory/qmd.mjs';");
+  assert.match(entry.run().failures.join("\n"), /forbidden|Node|server|boundary/i);
+  entry.write("src/agent-host/memory/qmd.mjs", "export const load = file => import(file);");
+  assert.match(entry.run().failures.join("\n"), /non-literal runtime import/);
+});
+
 test("non-literal imports and missing runtime modules cannot silently disappear", (t) => {
   const entry = fixture(t, {
     "src/renderer/view.ts": 'const name = "./unknown"; export const value = import(name); export * from "./missing";',

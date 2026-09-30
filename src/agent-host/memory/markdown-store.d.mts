@@ -12,6 +12,8 @@ export declare function searchMemoryMarkdown(
   query: string,
   options?: { limit?: number },
 ): MemorySearchResult[];
+export declare function memoryResultFromPath(root: string, relative: string): MemorySearchResult;
+export declare function assertMemoryDirectory(dir: string): void;
 export declare function openMemoryMarkdown(root: string, result: MemorySearchResult): string;
 export declare function writeMemoryMarkdown(
   root: string,

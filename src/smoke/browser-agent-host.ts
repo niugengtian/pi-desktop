@@ -466,7 +466,7 @@ server.handle({
           reasoning: false,
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 32_000,
+          contextWindow: 128_000,
           maxTokens: 1024,
         },
       ],
@@ -474,9 +474,30 @@ server.handle({
     const notifications: string[] = [];
     memoryNotifications.set(sessionId!, notifications);
     session.onEvent((event) => {
-      const request = event as { type?: string; method?: string; message?: string };
+      const request = event as { type?: string; id?: string; title?: string; method?: string; message?: string };
       if (request.type === "extension_ui_request" && request.method === "notify" && request.message)
         notifications.push(request.message);
+      // This listener belongs only to the isolated fictional fixture; never
+      // auto-approve a real user's session or a preview command.
+      if (
+        request.type === "extension_ui_request" &&
+        request.method === "confirm" &&
+        request.id &&
+        request.title?.startsWith("Approve memory delivery")
+      ) {
+        console.error("[memory-fixture] exact Desktop approval requested");
+        notifications.push("fictional-delivery-approved");
+        void session.send({ type: "extension_ui_response", id: request.id, confirmed: true });
+      } else if (
+        request.type === "extension_ui_request" &&
+        request.method === "confirm" &&
+        request.id &&
+        request.title?.toLowerCase().startsWith("approve web")
+      ) {
+        console.error("[memory-fixture] duplicate Web approval refused");
+        notifications.push("unexpected-duplicate-web-approval");
+        void session.send({ type: "extension_ui_response", id: request.id, confirmed: false });
+      }
     });
     await session.send({ type: "set_model", provider, modelId });
     return { provider, modelId };
@@ -508,6 +529,14 @@ server.handle({
     return {
       isRunning: session.isRunning(),
       isStreaming: session.inner.isStreaming,
+      assistantErrors: branch
+        .filter(
+          (e) =>
+            e.type === "message" &&
+            e.message.role === "assistant" &&
+            ["error", "aborted"].includes(e.message.stopReason),
+        )
+        .map((e) => (e.type === "message" && e.message.role === "assistant" ? e.message.errorMessage : "")),
       assistantTexts: ((session.inner.agent.state?.messages ?? []) as Array<{ role?: string; content?: unknown }>)
         .filter((m) => m.role === "assistant")
         .map((m) => textFromContent(m.content))

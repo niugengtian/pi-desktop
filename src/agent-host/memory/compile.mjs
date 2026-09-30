@@ -1,7 +1,8 @@
 import { buildSessionProjection } from "@earendil-works/pi-coding-agent";
-import { memoryCandidates, splitMemoryTiers } from "./tiers.mjs";
+import { memoryCandidates, memoryCursor, splitMemoryTiers } from "./tiers.mjs";
 import { memoryRecordId, writeMemoryMarkdown } from "./markdown-store.mjs";
-import { updateTaskMemory } from "./task-memory.mjs";
+import { taskMemorySource, updateTaskMemory } from "./task-memory.mjs";
+import { openMemoryMarkdown } from "./markdown-store.mjs";
 
 /**
  * Compile the active Pi branch into a human-readable stage file. This is a
@@ -16,6 +17,7 @@ export async function compileTaskMemory({
   run,
   root,
   previous = null,
+  checkpoint = null,
   expectedHash = null,
   onFailure = () => {},
   hotChars = 12_000,
@@ -36,12 +38,27 @@ export async function compileTaskMemory({
     sessionId,
     staged.map((candidate) => candidate.entryId),
   );
-  const selectedIds = new Set(staged.map((candidate) => candidate.entryId));
-  const selected = projection.entries.filter((item) => selectedIds.has(item.sourceEntry.id));
-  // The summarizer sees only the selected projected messages, never raw JSONL,
-  // system declarations, or unrelated branches.
-  const messages = selected.flatMap((item) => item.messages).filter((message) => message.role !== "system");
+  // Summarize only eligible projected candidate text. Re-expanding an entry
+  // could accidentally reintroduce a failed/unconfirmed sibling message.
+  const toMessage = (item) => ({ role: item.role, content: item.text });
+  const messages = staged.map(toMessage);
   messages.push({ role: "user", content: "", timestamp: Date.now() });
+  const cursor = memoryCursor(staged, checkpoint?.tier === tier ? checkpoint.cursor : null);
+  const branchCursor = memoryCursor(candidates);
+  // Restore an incremental source from this verified branch, not another raw
+  // transcript copy in the ledger. A changed prefix is always a fresh compile.
+  if (checkpoint?.tier === tier && cursor.appended !== null) {
+    const prefixCount = checkpoint.cursor.entries.length;
+    const prefixMessages = staged.slice(0, prefixCount).map(toMessage);
+    prefixMessages.push({ role: "user", content: "", timestamp: 0 });
+    previous = { ...checkpoint.memory, source: taskMemorySource(prefixMessages) };
+    // Check the persisted revision even when no model call is necessary.
+    try {
+      openMemoryMarkdown(root, { id: checkpoint.id, tier, hash: checkpoint.hash });
+    } catch (error) {
+      throw new Error("Memory checkpoint changed; manual edits were preserved.", { cause: error });
+    }
+  }
   const memory = await updateTaskMemory(messages, settings, run, previous, onFailure);
   if (!memory) return null;
   const record = {
@@ -61,8 +78,15 @@ export async function compileTaskMemory({
   };
   // A different stage/branch gets a new file, never the previous file's
   // revision. An existing target still requires its own known revision.
-  const saved = writeMemoryMarkdown(root, record, expectedHash);
+  const saved =
+    cursor.unchanged && checkpoint?.id === id
+      ? { path: checkpoint.path, hash: checkpoint.hash, unchanged: true }
+      : writeMemoryMarkdown(root, record, expectedHash);
   return {
+    // Persist only source IDs/hashes. The transient cursor.appended contains
+    // candidate text and must never create a second raw transcript in JSONL.
+    cursor: { fingerprint: cursor.fingerprint, entries: cursor.entries },
+    branchCursor: { fingerprint: branchCursor.fingerprint, entries: branchCursor.entries },
     ...saved,
     record,
     memory,

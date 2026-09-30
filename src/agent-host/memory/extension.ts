@@ -27,12 +27,16 @@ export function createTaskMemoryExtension() {
       let preview: Omit<TaskMemory, "source"> | undefined;
       let stale = false;
       let compiledRevision: { id: string; hash: string; path: string } | undefined;
+      let checkpoint: Parameters<typeof compileTaskMemory>[0]["checkpoint"];
+      const revisions = new Map<string, { hash: string; path: string }>();
 
       pi.on("session_start", (_event, ctx) => {
         current = undefined;
         preview = undefined;
         stale = false;
         compiledRevision = undefined;
+        checkpoint = null;
+        revisions.clear();
         for (const entry of ctx.sessionManager.getBranch()) {
           if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
           const data = entry.data as (Partial<TaskMemory> & { id?: string; hash?: string; path?: string }) | undefined;
@@ -45,6 +49,9 @@ export function createTaskMemoryExtension() {
             continue;
           if (typeof data.path === "string" && typeof data.hash === "string" && typeof data.id === "string") {
             compiledRevision = { id: data.id, hash: data.hash, path: data.path };
+            revisions.set(data.id, { hash: data.hash, path: data.path });
+            const ledger = entry.data as { schemaVersion?: number; checkpoint?: typeof checkpoint };
+            if (ledger.schemaVersion === 2 && ledger.checkpoint) checkpoint = ledger.checkpoint;
           }
           preview = {
             sourceHash: data.sourceHash,
@@ -102,8 +109,9 @@ export function createTaskMemoryExtension() {
             root: join(getAgentDir(), "task-memory-vault"),
             // The Markdown file is authoritative; only reuse a revision for the
             // same derived record. A changed branch gets a new provenance ID.
-            expectedHash: sameRecord ? compiledRevision!.hash : null,
+            expectedHash: nextId ? (revisions.get(nextId)?.hash ?? null) : null,
             previous: sameRecord ? (current ?? null) : null,
+            checkpoint,
             onFailure: (id, error) =>
               ctx.ui.notify(
                 `Task memory model ${id} failed; ${settings.fallback ? "trying configured backup" : "no backup is configured"}: ${error instanceof Error ? error.message : String(error)}`,
@@ -121,12 +129,25 @@ export function createTaskMemoryExtension() {
             sourceChars: result.memory.sourceChars,
             summaryChars: result.memory.summaryChars,
           };
-          pi.appendEntry(ENTRY_TYPE, {
-            schemaVersion: 1,
-            ...preview,
+          const ledgerChanged =
+            checkpoint?.branchCursor?.fingerprint !== result.branchCursor.fingerprint ||
+            checkpoint?.memory.sourceHash !== result.memory.sourceHash;
+          checkpoint = {
             ...compiledRevision,
-            createdAt: new Date().toISOString(),
-          });
+            tier: result.record.tier,
+            cursor: result.cursor,
+            branchCursor: result.branchCursor,
+            memory: preview,
+          };
+          revisions.set(result.record.id, { hash: result.hash, path: result.path });
+          if (!result.unchanged || ledgerChanged)
+            pi.appendEntry(ENTRY_TYPE, {
+              schemaVersion: 2,
+              ...preview,
+              ...compiledRevision,
+              checkpoint,
+              createdAt: new Date().toISOString(),
+            });
           ctx.ui.setStatus("task-memory", `Memory: ${result.path} (${result.memory.summaryChars} chars)`);
         } catch (error) {
           stale = true;

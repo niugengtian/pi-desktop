@@ -18,7 +18,11 @@ import { createTray, destroyTray, updateTrayMenu, setTrayManagedProcessCount, se
 import { createMainWindow } from "./window";
 import { installDesktopIpc } from "./ipc";
 import { createCredentialRequestHandler, CredentialVault } from "./credential-vault";
-import { createProductionUpdateAdapter, isProductionUpdatePlatformEnabled } from "./update-adapter";
+import {
+  createProductionUpdateAdapter,
+  isProductionUpdatePlatformEnabled,
+  shouldInitializeUpdater,
+} from "./update-adapter";
 import { createUpdateManager, redactUpdateError, type UpdateManager } from "./update-manager";
 import { ToolchainManager } from "./toolchains/manager";
 import { resolveRuntimeCatalogPath } from "./toolchains/catalog";
@@ -46,12 +50,14 @@ import { discoverHerdrAgentClis, type HerdrAgentCliDiscoverySnapshot } from "./h
 
 // Must run before app ready. The opt-in memory test build has its own
 // Electron instance lock and userData; never read the installed app's state.
-const isolatedMemoryTest = app.isPackaged && process.env.PI_DESKTOP_MEMORY_TEST_BUILD === "1";
+const isolatedMemoryTest =
+  app.isPackaged &&
+  (process.env.PI_DESKTOP_MEMORY_TEST_BUILD === "1" || app.getName() === "Pi Agent Desktop Memory Test");
 if (isolatedMemoryTest) {
   const userData = path.join(os.homedir(), "Library", "Application Support", "Pi Agent Desktop Memory Test");
   app.setPath("userData", userData);
   process.env.PI_CODING_AGENT_DIR = path.join(userData, "agent");
-  process.env.PI_CODING_AGENT_SESSION_DIR = path.join(userData, "sessions");
+  process.env.PI_CODING_AGENT_SESSION_DIR = path.join(userData, "agent", "sessions");
   process.env.PI_OFFLINE = "1";
 }
 registerAppProtocol();
@@ -531,7 +537,13 @@ function startMainProcess(): void {
     const updaterSupported =
       isProductionUpdatePlatformEnabled(process.platform) ||
       (updaterTestMode && (process.platform === "darwin" || process.platform === "win32"));
-    const updaterRequested = app.isPackaged || updaterTestMode;
+    const updaterRequested = shouldInitializeUpdater({
+      isPackaged: app.isPackaged,
+      testMode: updaterTestMode,
+      configPresent: fs.existsSync(path.join(process.resourcesPath, "app-update.yml")),
+    });
+    if (app.isPackaged && !updaterRequested)
+      appendMainLog("automatic updates disabled: local bundle has no release update metadata");
     let updateAdapter = null;
     if (updaterSupported && updaterRequested) {
       try {

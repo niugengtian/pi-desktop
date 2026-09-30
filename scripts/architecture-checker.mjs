@@ -80,6 +80,8 @@ function dependencies(tree) {
   const add = (node, argument) =>
     found.push({
       specifier: argument && ts.isStringLiteralLike(argument) ? argument.text : null,
+      expression: argument?.getText(tree),
+      dynamicImport: ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword,
       line: tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1,
     });
   const visit = (node) => {
@@ -228,6 +230,17 @@ export function checkArchitecture({ root, policy = {} }) {
       const specifier = dependency.specifier;
       const line = original.find((item) => item.specifier === specifier)?.line ?? dependency.line;
       if (specifier === null) {
+        // Only this server-side capability loads executable code from an
+        // explicitly configured, absolute local SDK path. Do not exempt other
+        // expressions/files or weaken renderer reachability checks.
+        if (
+          name === "src/agent-host/memory/qmd.mjs" &&
+          dependency.dynamicImport &&
+          dependency.expression === "pathToFileURL(file).href"
+        ) {
+          edges.push({ to: "node:module", server: true });
+          continue;
+        }
         failures.push(name + ":" + line + ": non-literal runtime import cannot be checked");
         continue;
       }

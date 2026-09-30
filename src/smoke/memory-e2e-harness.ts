@@ -17,7 +17,7 @@ fs.mkdirSync(project, { recursive: true });
 fs.mkdirSync(agent, { recursive: true });
 app.setPath("userData", path.join(root, "user-data"));
 process.env.PI_CODING_AGENT_DIR = agent;
-process.env.PI_CODING_AGENT_SESSION_DIR = path.join(root, "sessions");
+process.env.PI_CODING_AGENT_SESSION_DIR = path.join(agent, "sessions");
 process.env.PI_OFFLINE = "1";
 fs.writeFileSync(
   path.join(agent, "models.json"),
@@ -42,6 +42,21 @@ fs.writeFileSync(
   }),
   { mode: 0o600 },
 );
+const pageExtension = process.env.PI_MEMORY_E2E_PAGE_EXTENSION;
+const pageRequestFile = path.join(root, "fake-page-request.json");
+if (pageExtension) {
+  assert.ok(path.isAbsolute(pageExtension) && fs.existsSync(pageExtension));
+  const node = process.env.PI_MEMORY_E2E_NODE;
+  assert.ok(node && path.isAbsolute(node));
+  fs.writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ extensions: [pageExtension] }));
+  const fakeBridge = path.join(root, "fake-page-bridge.mjs");
+  fs.writeFileSync(
+    fakeBridge,
+    `#!${node}\nimport fs from 'node:fs';\nlet data=''; for await (const chunk of process.stdin) data+=chunk; const request=JSON.parse(data); fs.writeFileSync(${JSON.stringify(pageRequestFile)}, JSON.stringify(request.params)); console.log(JSON.stringify({type:'turn.completed',turnId:request.id,message:{markdown:'Fictional Page Provider completed reply'},remote:{site:'chatgpt',mode:'chat',conversationId:'fictional',conversationUrl:'https://chatgpt.com/c/fictional'}}));\n`,
+    { mode: 0o700 },
+  );
+  process.env.PI_PAGE_PROVIDER_BRIDGE = fakeBridge;
+}
 let host: HostManager | undefined;
 let window: BrowserWindow | undefined;
 async function waitFor<T>(
@@ -68,6 +83,7 @@ type Status = {
   isRunning: boolean;
   isStreaming: boolean;
   assistantTexts: string[];
+  assistantErrors: string[];
   memoryEntries: Array<{ path: string; hash: string; id: string; summary: string; modelId: string }>;
   sessionFile?: string;
   notifications: string[];
@@ -155,13 +171,39 @@ async function run() {
   assert.ok(preview.title.includes("ollama-local") && preview.message.includes(entry.summary));
   console.log("Preview UI event verified against local summary");
 
+  if (pageExtension) {
+    await host.call("agent.command", {
+      sessionId,
+      command: { type: "set_model", provider: "opencli-page", modelId: "chatgpt-web" },
+    });
+    await host.call("agent.command", {
+      sessionId,
+      command: { type: "prompt", message: "虚构切换：继续本机记忆库设计；回包来自假桥，不访问网站。" },
+    });
+    const pageStatus = await waitFor<Status>(
+      "approved local memory → Page Provider → fake bridge",
+      () => host!.call("memoryE2e.status", { sessionId }),
+      (v) =>
+        (v.assistantTexts.includes("Fictional Page Provider completed reply") || v.assistantErrors.length > 0) &&
+        !v.isRunning &&
+        !v.isStreaming,
+    );
+    assert.deepEqual(pageStatus.assistantErrors, [], "Page delivery failed");
+    const sent = JSON.parse(fs.readFileSync(pageRequestFile, "utf8")) as { text: string };
+    assert.ok(sent.text.startsWith("[PI APPROVED MEMORY HANDOFF v1]"));
+    assert.equal((sent.text.match(/\[PI APPROVED MEMORY HANDOFF v1\]/g) ?? []).length, 1);
+    assert.ok(!sent.text.includes("### Checkpoint") && sent.text.length <= 24_000);
+    console.log("Desktop approval receipt → real Page Provider registration → exact fake-bridge prompt verified");
+    await host.call("memoryE2e.configure", { sessionId });
+  }
+
   // A long *fictional* current turn forces older projected entries into warm.
   // Nothing here is read from the user's actual Pi sessions.
   await host.call(
     "agent.command",
     {
       sessionId,
-      command: { type: "prompt", message: `虚构第二阶段：${"讨论离线任务记忆的边界与来源。".repeat(850)}` },
+      command: { type: "prompt", message: `虚构第二阶段：${"Fictional offline memory boundary.\n\n".repeat(420)}` },
     },
     15_000,
   );
@@ -174,6 +216,25 @@ async function run() {
   const warmFile = path.join(vault, warm.path);
   const originalWarm = fs.readFileSync(warmFile, "utf8");
   assert.ok(originalWarm.includes(sessionId) && originalWarm.includes("## Sources"));
+  await host.stop();
+  host.start();
+  await waitFor(
+    "restarted Host ready",
+    () => host!.getStatus(),
+    (value) => value === "ready",
+    25_000,
+  );
+  await host.call("agent.command", { sessionId, command: { type: "get_state" } });
+  await host.call("memoryE2e.configure", { sessionId });
+  await host.call("agent.command", { sessionId, command: { type: "prompt", message: "/task-memory-refresh" } });
+  const resumed = await host.call<Status>("memoryE2e.status", { sessionId });
+  assert.equal(
+    resumed.memoryEntries.length,
+    warmed.memoryEntries.length,
+    "restart duplicated an unchanged memory stage",
+  );
+  assert.equal(fs.readFileSync(warmFile, "utf8"), originalWarm, "restart rewrote an unchanged memory stage");
+  console.log("Persisted cursor restored after Host restart without rewriting the warm stage");
   const edited = `${originalWarm}\n人工测试编辑：必须保留。\n`;
   fs.writeFileSync(warmFile, edited);
   await host.call(

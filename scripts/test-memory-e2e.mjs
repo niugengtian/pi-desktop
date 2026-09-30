@@ -49,6 +49,7 @@ try {
       NODE_PATH: projectNodePath(project, process.env.NODE_PATH),
       ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
       PI_MEMORY_E2E_ROOT: root,
+      PI_MEMORY_E2E_NODE: process.execPath,
       PI_MEMORY_E2E_HOST_ENTRY: host,
     },
   });

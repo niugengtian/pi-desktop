@@ -85,8 +85,14 @@ export function renderMemoryMarkdown(record) {
   return `---\nid: ${scalar(id)}\ntier: ${scalar(tier)}\nupdated: ${scalar(date.toISOString())}\nmodel: ${scalar(modelId)}\nkeywords: [${keywords.map(scalar).join(", ")}]\n---\n\n# ${title}\n\n${summary.trim()}\n\n## Sources\n\n| Pi session | Branch leaf | Entry ID | Source SHA-256 |\n| --- | --- | --- | --- |\n${rows.join("\n")}\n`;
 }
 
+export function assertMemoryDirectory(dir) {
+  if (existsSync(dir) && !lstatSync(dir).isDirectory())
+    throw new Error("Memory directory must not be a symlink or non-directory.");
+}
 function files(root, tier, id) {
   const base = resolve(root);
+  assertMemoryDirectory(base);
+  assertMemoryDirectory(resolve(base, safeTier(tier)));
   const relative = relativeRecordPath(tier, id);
   const file = resolve(base, relative);
   if (!file.startsWith(base + sep)) throw new Error("Record must remain in the memory root.");
@@ -138,11 +144,13 @@ export function searchMemoryMarkdown(root, query, { limit = 10 } = {}) {
   if (typeof query !== "string" || !query.trim() || query.length > 200)
     throw new Error("Search query must be 1–200 characters.");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error("Invalid result limit.");
+  assertMemoryDirectory(resolve(root));
   const terms = query.trim().toLocaleLowerCase().split(/\s+/u);
   const results = [];
   for (const tier of ["hot", "warm"]) {
     const dir = resolve(root, tier);
     if (!existsSync(dir)) continue;
+    assertMemoryDirectory(dir);
     // No network or indexing service is required for the keyword fallback.
     for (const name of requireDirectoryFiles(dir)) {
       if (!/^mem-[a-f0-9]{24}\.md$/.test(name)) continue;
@@ -165,11 +173,22 @@ function requireDirectoryFiles(dir) {
   });
 }
 
+export function memoryResultFromPath(root, relative) {
+  const match = typeof relative === "string" && relative.match(/^(hot|warm)\/(mem-[a-f0-9]{24})\.md$/);
+  if (!match) throw new Error("Invalid Markdown result path.");
+  const [, tier, id] = match;
+  const { file } = files(root, tier, id);
+  if (!lstatSync(file).isFile()) throw new Error("Memory is not a regular file.");
+  const text = readFileSync(file, "utf8");
+  return { id, tier, path: relative, title: text.match(/^# (.+)$/m)?.[1] ?? id, hash: sha256(text), score: 0 };
+}
+
 export function openMemoryMarkdown(root, result) {
   if (!result || typeof result !== "object") throw new Error("Select a search result first.");
   const { file } = files(root, result.tier, result.id);
   if (!lstatSync(file).isFile()) throw new Error("Memory file is not a regular file.");
   const text = readFileSync(file, "utf8");
-  if (sha256(text) !== result.hash) throw new Error("Memory changed after search; search again before opening.");
+  if (sha256(text) !== result.hash)
+    throw new Error("Memory changed after search; search again before opening (manual edits were preserved).");
   return text;
 }

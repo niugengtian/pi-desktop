@@ -31,6 +31,14 @@ export interface ProductionUpdateAdapterOptions {
   createCancellationToken?: () => CancellationToken;
 }
 
+export function shouldInitializeUpdater(options: {
+  isPackaged: boolean;
+  testMode: boolean;
+  configPresent: boolean;
+}): boolean {
+  return options.isPackaged ? options.configPresent : options.testMode;
+}
+
 export function isProductionUpdatePlatformEnabled(platform: NodeJS.Platform): boolean {
   // Windows releases intentionally omit publisherName while Authenticode
   // signing is unavailable. electron-updater therefore skips publisher

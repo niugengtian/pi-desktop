@@ -86,6 +86,58 @@ test("failed local model writes nothing; manual edits block a later model update
   assert.match(readFileSync(file, "utf8"), /Edited by human/);
 });
 
+test("persisted cursor resumes an append-only warm stage without reprocessing its prefix", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "memory-cursor-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const first = await compileTaskMemory(fixture(root, { hotChars: 0 }));
+  const memory = { ...first.memory };
+  delete memory.source;
+  const checkpoint = {
+    id: first.record.id,
+    tier: first.record.tier,
+    path: first.path,
+    hash: first.hash,
+    cursor: first.cursor,
+    branchCursor: first.branchCursor,
+    memory,
+  };
+  const resumed = await compileTaskMemory(
+    fixture(root, {
+      hotChars: 0,
+      checkpoint,
+      run: async () => {
+        throw Error("unchanged source must not invoke model");
+      },
+    }),
+  );
+  assert.equal(resumed.unchanged, true);
+  assert.equal(resumed.hash, first.hash);
+  const nextUser = entry("next-user", "result", "user", "Implement cold retrieval now");
+  const nextAnswer = entry("next-answer", "next-user", "assistant", "Cold retrieval verified");
+  const prompts = [];
+  const second = await compileTaskMemory(
+    fixture(root, {
+      hotChars: 0,
+      checkpoint,
+      entries: [...entries, nextUser, nextAnswer],
+      branchLeafId: "next-answer",
+      run: async (_id, prompt) => {
+        prompts.push(prompt);
+        return "Local summary including cold retrieval";
+      },
+    }),
+  );
+  assert.equal(Object.hasOwn(second.cursor, "appended"), false);
+  assert.equal(Object.hasOwn(second.branchCursor, "appended"), false);
+  assert.ok(second.cursor.entries.length > first.cursor.entries.length);
+  assert.ok(
+    !JSON.stringify({ cursor: second.cursor, branchCursor: second.branchCursor }).includes("Cold retrieval verified"),
+  );
+  assert.ok(prompts[0].includes("Cold retrieval verified"));
+  assert.ok(!prompts[0].includes("Design an offline memory system"));
+  assert.ok(prompts[0].includes(JSON.stringify(first.memory.summary)));
+});
+
 test("disabled memory never contacts the model or writes files", async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "memory-compile-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

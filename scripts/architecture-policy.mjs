@@ -40,9 +40,9 @@ export const architecturePolicy = {
       reason: "Existing terminal/session coordination; lifecycle changes require native integration evidence.",
     },
     "src/agent-host/rpc-manager.ts": {
-      maxLines: 1546,
+      maxLines: 1548,
       reason:
-        "Late extension registration preserves explicit no-tools choices; shared terminal tool registration adds one fixed, capability-gated composition path.",
+        "Late extension registration preserves explicit no-tools choices; shared terminal tools remain capability-gated. Two memory facade wiring lines bind an extracted request guard; memory policy stays outside this module.",
     },
     "src/renderer/components/SettingsConfig.tsx": {
       maxLines: 1480,

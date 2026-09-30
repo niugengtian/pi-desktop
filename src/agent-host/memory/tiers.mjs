@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalMemoryText } from "./normalize.mjs";
 
 const digest = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 const MAX_CANDIDATE_CHARS = 120_000;
@@ -30,13 +31,15 @@ export function memoryCandidates(projection, { sessionId, branchLeafId }) {
       totalChars += text.length;
       if (totalChars > MAX_CANDIDATE_CHARS)
         throw new Error("Memory source exceeds the configured limit; nothing was promoted.");
+      const cleanText = canonicalMemoryText(text, message.role);
+      if (!cleanText) continue;
       candidates.push({
         id: `${sessionId}:${entry.id}`,
         sessionId,
         branchLeafId,
         entryId: entry.id,
         role: message.role,
-        text,
+        text: cleanText,
         sourceHash: digest(text),
       });
     }
@@ -49,8 +52,13 @@ export function splitMemoryTiers(candidates, { hotChars = MAX_HOT_CHARS } = {}) 
   if (!Number.isSafeInteger(hotChars) || hotChars < 0) throw new Error("Invalid hot memory budget.");
   let hotSize = 0;
   let boundary = candidates.length;
-  while (boundary > 0 && hotSize + candidates[boundary - 1].text.length <= hotChars) {
-    hotSize += candidates[--boundary].text.length;
+  while (boundary > 0) {
+    let start = boundary - 1;
+    while (start > 0 && candidates[start - 1].entryId === candidates[boundary - 1].entryId) start--;
+    const size = candidates.slice(start, boundary).reduce((sum, item) => sum + item.text.length, 0);
+    if (hotSize + size > hotChars) break;
+    hotSize += size;
+    boundary = start;
   }
   return {
     hot: candidates.slice(boundary),

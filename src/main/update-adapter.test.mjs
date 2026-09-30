@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isProductionUpdatePlatformEnabled, wrapElectronUpdater } from "./update-adapter.ts";
+import { isProductionUpdatePlatformEnabled, shouldInitializeUpdater, wrapElectronUpdater } from "./update-adapter.ts";
+
+test("local --dir packages do not check a missing release update configuration", () => {
+  assert.equal(shouldInitializeUpdater({ isPackaged: true, testMode: false, configPresent: false }), false);
+  assert.equal(shouldInitializeUpdater({ isPackaged: true, testMode: false, configPresent: true }), true);
+  assert.equal(shouldInitializeUpdater({ isPackaged: false, testMode: true, configPresent: false }), true);
+  assert.equal(shouldInitializeUpdater({ isPackaged: false, testMode: false, configPresent: true }), false);
+});
 
 class FakeElectronUpdater {
   constructor() {

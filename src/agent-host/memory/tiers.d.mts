@@ -21,7 +21,16 @@ export declare function splitMemoryTiers(
   hotChars: number;
   warmChars: number;
 };
-export declare function memoryCursor(candidates: MemoryCandidate[], previous?: unknown): unknown;
+export interface MemoryCursor {
+  fingerprint: string;
+  entries: string[];
+  unchanged: boolean;
+  appended: MemoryCandidate[] | null;
+}
+export declare function memoryCursor(
+  candidates: MemoryCandidate[],
+  previous?: { fingerprint: string; entries: string[] } | null,
+): MemoryCursor;
 export declare function planMemoryDelivery(options: {
   from?: { provider: string; modelId: string } | null;
   to: { provider: string; modelId: string };

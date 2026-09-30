@@ -43,7 +43,7 @@ import { peekHerdrBridge } from "./herdr/runtime";
 import { createHerdrToolDefinitions, herdrToolNamesForRuntime, isHerdrToolName } from "./herdr/tools";
 import { installHerdrSessionRedaction } from "./herdr/session-redaction";
 import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
-import { createTaskMemoryExtension } from "./memory/extension";
+import { createDesktopMemoryDelivery } from "./memory/controller";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
 import { createLegacyChannelContextExtension } from "./legacy-channel-context";
 
@@ -1472,11 +1472,12 @@ export async function startRpcSession(
 
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
+    const memoryDelivery = createDesktopMemoryDelivery(agentDir);
     const extensionFactories = [
       createLegacyChannelContextExtension(),
       createEphemeralContextExtension(ephemeralContext),
       createDesktopPromptExtension(promptPolicy),
-      createTaskMemoryExtension(),
+      ...memoryDelivery.extensions,
     ];
     const services = await createAgentSessionServices({
       cwd,
@@ -1510,6 +1511,7 @@ export async function startRpcSession(
           )
         : []),
     ] as unknown as NonNullable<CreateAgentSessionFromServicesOptions["customTools"]>;
+    memoryDelivery.install(services.modelRuntime);
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
