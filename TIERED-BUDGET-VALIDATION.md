@@ -1,5 +1,7 @@
 # TIER-02 — native budget coordinator / fail-closed dispatch prototype
 
+Historical checkpoint `6fb43c9`. The later incremental Flash hook is documented separately in [TIERED-WARM-VALIDATION.md](TIERED-WARM-VALIDATION.md); it does not broaden this stage's API/token acceptance.
+
 ## Version and boundaries
 
 - Independent `feat/tiered-context-compare`, following stage 1 `e426baf` / production baseline `3ffe707`.
@@ -86,6 +88,6 @@ Host and Renderer TypeScript, local ESLint/Prettier, diff checks and offline Mai
 
 ## Next
 
-- Native prepared-range Flash incremental warm hook, with its OWN reviewed source/target permission, no inherited local/budget grant. Start with synthetic mocked SDK requests; real Flash source dispatch needs explicit approval.
+- TIER-03 adds a reviewed extractive native-range Flash prototype (linked report), tested only with synthetic mocked transport. Real Flash quality/history dispatch still needs explicit payload approval; full structured state/contradiction reduction is not complete.
 - Exact/calibrated token strategy and Responses/Codex protocol guard before claiming usable comparison for Sol.
 - Separate isolated Electron comparison package and actual GUI/source/payload checks; then Web submission/retrieval closure. Not yet installed, packaged or GUI-accepted.

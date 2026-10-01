@@ -16,6 +16,8 @@ import {
   type BudgetReport,
 } from "./tiered-budget.mjs";
 import { tieredHash } from "./tiered-workspace.mjs";
+import { buildWarmPlan, validateWarmAnswer, WARM_INSTRUCTIONS, type WarmRecord } from "./tiered-warm.mjs";
+import { WARM_TARGET, type WarmRunnerFactory } from "./tiered-warm-remote.mjs";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { constants, openSync, fstatSync, readFileSync, closeSync } from "node:fs";
 
@@ -40,6 +42,10 @@ export class TieredBudgetController {
     fileHash: string;
     firstKeptEntryId: string;
   };
+  private warmMode = false;
+  private warmCandidate?: { summaryHash: string; detailsHash: string; consentVersion: number };
+  private readonly warmRunner?: WarmRunnerFactory;
+  private readonly consentVersion: () => number;
   private installed = false;
   private readonly promptAdmission = new Map<symbol, boolean>();
   private readonly policy: BudgetPolicy;
@@ -48,11 +54,20 @@ export class TieredBudgetController {
 
   constructor({
     policy = TIERED_BUDGET,
+    warmRunner,
+    consentVersion = () => 0,
     supports = (model: SupportedModel) =>
       model.api === "openai-completions" && ["openai", "deepseek"].includes(model.provider),
-  }: { policy?: BudgetPolicy; supports?: (model: SupportedModel) => boolean } = {}) {
+  }: {
+    policy?: BudgetPolicy;
+    supports?: (model: SupportedModel) => boolean;
+    warmRunner?: WarmRunnerFactory;
+    consentVersion?: () => number;
+  } = {}) {
     this.policy = Object.freeze({ ...policy });
     this.supports = supports;
+    this.warmRunner = warmRunner;
+    this.consentVersion = consentVersion;
   }
   get enabled() {
     return Boolean(this.grant);
@@ -68,6 +83,8 @@ export class TieredBudgetController {
   private disable() {
     this.generation++;
     this.grant = undefined;
+    this.warmMode = false;
+    this.warmCandidate = undefined;
     this.compacting = false;
     this.compactSource = undefined;
     this.compactionPaused = false;
@@ -182,6 +199,14 @@ export class TieredBudgetController {
           firstKeptEntryId !== source.firstKeptEntryId
         )
           refuse("compaction-source-or-cut-invalidated");
+        if (
+          this.warmMode &&
+          (!fromHook ||
+            this.warmCandidate?.consentVersion !== this.consentVersion() ||
+            this.warmCandidate?.summaryHash !== tieredHash(summary) ||
+            this.warmCandidate.detailsHash !== tieredHash(JSON.stringify(details)))
+        )
+          refuse("unapproved-flash-candidate-or-native-fallback");
         const warm = convertToLlm([{ role: "compactionSummary", summary, tokensBefore, timestamp: 0 }]);
         if (!summary.trim() || estimateEnvelope(warm, warm.length).estimatedTokens > this.policy.warmMax)
           refuse("warm-candidate-not-committed");
@@ -198,6 +223,7 @@ export class TieredBudgetController {
       this.sourceFingerprint();
       const projectionHash = tieredHash(JSON.stringify(session.sessionManager.buildSessionProjection().messages));
       const operation = this.compacting ? "native-compaction" : "chat";
+      if (operation === "native-compaction" && this.warmMode) refuse("native-summary-fallback-prohibited");
       if (operation === "chat" && options?.sessionId !== session.sessionId) refuse("auxiliary-operation-not-supported");
       const outputReserved =
         operation === "chat" ? chatOutputLimit(model) : Math.min(model.maxTokens, this.policy.warmTarget);
@@ -320,12 +346,41 @@ export class TieredBudgetController {
               JSON.stringify({
                 enabled: this.enabled,
                 compactionPaused: this.compactionPaused,
+                warmProcessor: this.warmMode ? "flash-per-attempt-review" : "native",
                 lastReport: this.lastReport ?? null,
               }),
             );
           },
         });
-        pi.on("session_before_compact", (event, ctx) => {
+        pi.registerCommand("tiered-warm-flash", {
+          description: "Select incremental Flash warm; each source and result require separate review",
+          handler: async (_args, ctx) => {
+            if (!this.enabled || !this.warmRunner || !ctx.hasUI || !ctx.isIdle()) {
+              notify(ctx, "Requires approved budget, idle UI and Flash processor; nothing sent.", "warning");
+              return;
+            }
+            this.warmMode = true;
+            this.generation++;
+            notify(
+              ctx,
+              "Flash warm selected, NOT authorized. Each native prepared delta needs full source approval and final evidence review; cancel/failure never falls back to native summary. Existing task-memory/website grants are not reused.",
+            );
+          },
+        });
+        pi.registerCommand("tiered-warm-native", {
+          description: "Explicitly restore native selected-model summaries, not automatic fallback",
+          handler: async (_args, ctx) => {
+            this.generation++;
+            this.session?.abortCompaction();
+            this.warmMode = false;
+            this.warmCandidate = undefined;
+            notify(
+              ctx,
+              "Native warm explicitly selected. Automatic compaction pause remains until manual /compact or budget re-approval.",
+            );
+          },
+        });
+        pi.on("session_before_compact", async (event, ctx) => {
           if (!this.enabled) return;
           if (this.compactionPaused && event.reason !== "manual") return { cancel: true };
           if (event.reason === "manual") this.compactionPaused = false;
@@ -353,8 +408,76 @@ export class TieredBudgetController {
               firstKeptEntryId: event.preparation.firstKeptEntryId,
             };
             this.compacting = true;
+            this.warmCandidate = undefined;
+            if (this.warmMode) {
+              if (!ctx.hasUI || !this.warmRunner) return { cancel: true };
+              const source = this.compactSource;
+              const consentVersion = this.consentVersion();
+              const authorized = () => {
+                try {
+                  return (
+                    consentVersion === this.consentVersion() &&
+                    !event.signal.aborted &&
+                    this.warmMode &&
+                    source === this.compactSource &&
+                    source.grant === this.grant &&
+                    source.generation === this.generation &&
+                    source.branchHash === tieredHash(JSON.stringify(this.session!.sessionManager.getBranch())) &&
+                    source.fileHash === this.sourceFingerprint()
+                  );
+                } catch {
+                  return false;
+                }
+              };
+              const plan = buildWarmPlan(ctx.sessionManager, event.preparation);
+              if (event.preparation.previousSummary) {
+                const prior = convertToLlm([
+                  {
+                    role: "compactionSummary",
+                    summary: event.preparation.previousSummary,
+                    tokensBefore: 0,
+                    timestamp: 0,
+                  },
+                ]);
+                if (estimateEnvelope(prior, prior.length).estimatedTokens >= this.policy.warmMax)
+                  return { cancel: true };
+              }
+              const approved = await ctx.ui.confirm(
+                "Approve this ONE incremental Flash payload?",
+                `Target: ${WARM_TARGET}\nOutput cap ≤2048; thinking disabled; no tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS, not a local-only service.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. No tools executed by Flash. Source permission expires with this attempt.\nSYSTEM:\n${WARM_INSTRUCTIONS}\nUSER:\n${plan.payload}`,
+              );
+              if (!approved || !authorized()) return { cancel: true };
+              const reply = await this.warmRunner({ signal: event.signal, authorized })(plan);
+              if (!authorized()) return { cancel: true };
+              const candidate = validateWarmAnswer(plan, reply.answer);
+              const warm = convertToLlm([
+                {
+                  role: "compactionSummary",
+                  summary: candidate.summary,
+                  tokensBefore: candidate.tokensBefore,
+                  timestamp: 0,
+                },
+              ]);
+              if (estimateEnvelope(warm, warm.length).estimatedTokens > this.policy.warmMax) return { cancel: true };
+              const reviewed = await ctx.ui.confirm(
+                "Review omissions BEFORE warm replaces context",
+                `Quotes/citations and numeric/name anchors are structurally checked, NOT semantically lossless. Confirm all necessary facts/constraints/order/status are retained; otherwise reject and keep original hot. Only native append changes the active context.\nCANDIDATE:\n${candidate.summary}\nSOURCE:\n${plan.payload}`,
+              );
+              if (!reviewed || !authorized()) return { cancel: true };
+              (candidate.details as { tieredWarm: WarmRecord }).tieredWarm.review = "human-approved-not-proven";
+              this.warmCandidate = {
+                consentVersion,
+                summaryHash: tieredHash(candidate.summary),
+                detailsHash: tieredHash(JSON.stringify(candidate.details)),
+              };
+              return { compaction: { ...candidate, usage: reply.usage } };
+            }
           } catch {
-            notify(ctx, "Native source consistency check refused compaction; no summary request or commit.", "warning");
+            notify(
+              ctx,
+              "Warm preparation/source/processor/quality refused; no native fallback, no promotion, original hot retained. A processor request may already have been dispatched.",
+              "warning",
+            );
             return { cancel: true };
           }
         });
@@ -362,10 +485,12 @@ export class TieredBudgetController {
           this.compacting = false;
           this.compactSource = undefined;
           this.compactionPaused = false;
+          this.warmCandidate = undefined;
         });
         pi.on("session_compact_failed", (_event, ctx) => {
           this.compacting = false;
           this.compactSource = undefined;
+          this.warmCandidate = undefined;
           if (this.enabled) {
             this.compactionPaused = true;
             notify(

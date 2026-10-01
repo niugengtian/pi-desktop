@@ -48,6 +48,8 @@ import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-pro
 import { createTaskMemoryExtension } from "./memory/extension";
 import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
 import { TieredBudgetController } from "./memory/tiered-budget-controller";
+import { createFlashWarmRunner } from "./memory/tiered-warm-remote.mjs";
+import { memoryModelConsentEpoch } from "./handlers/memory-model";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
 import { createLegacyChannelContextExtension } from "./legacy-channel-context";
 
@@ -1477,7 +1479,10 @@ export async function startRpcSession(
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
     let validationMemoryRuntime: Promise<ModelRuntime> | undefined;
-    const tieredBudget = new TieredBudgetController();
+    const tieredBudget: TieredBudgetController = new TieredBudgetController({
+      warmRunner: (options) => createFlashWarmRunner({ ...options, runtime: memoryRuntime }),
+      consentVersion: memoryModelConsentEpoch,
+    });
     const extensionFactories = [
       createLegacyChannelContextExtension(),
       createEphemeralContextExtension(ephemeralContext),
@@ -1514,7 +1519,7 @@ export async function startRpcSession(
       resourceLoaderOptions: { extensionFactories },
     });
     const services = { ...nativeServices, settingsManager: tieredBudget.wrapSettings(nativeServices.settingsManager) };
-    const memoryRuntime = services.modelRuntime;
+    const memoryRuntime: ModelRuntime = services.modelRuntime;
     const executionContext = await toolchainRuntime.createExecutionContext({
       cwd,
       intent: "agent-shell",

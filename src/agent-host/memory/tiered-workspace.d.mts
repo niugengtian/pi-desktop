@@ -3,7 +3,14 @@ import type { ReadonlySessionManager } from "@earendil-works/pi-coding-agent";
 export interface TieredSnapshot {
   identity: { sessionId: string; leafId: string | null; branchHash: string; sourcePath: string; sourceHash: string };
   boundCwd: string;
-  warm: { version: string | null; summary: string; sourceEntryIds: string[] };
+  warm: {
+    version: string | null;
+    summary: string;
+    sourceEntryIds: string[];
+    factsStatus: "not-extracted" | "human-reviewed-extractive-not-lossless";
+    processor: "flash-off-incremental" | "sdk-native";
+    factVersion: number | null;
+  };
   hot: Array<{ sourceEntryId: string; message: unknown }>;
   projectedContext: unknown[];
   pendingToolCallIds: string[];

@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { readWarmRecord } from "./tiered-warm.mjs";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 // Prototype bounds: stop explicitly instead of unbounded O(n²) cold-export archives.
@@ -144,6 +145,7 @@ export function buildTieredSnapshot(manager) {
     throw new Error("Compaction coverage boundary is absent from active branch");
   }
   const covered = compaction ? (keptIndex < 0 ? before : before.slice(0, keptIndex)) : [];
+  const warmRecord = readWarmRecord(compaction);
   const warm = {
     version: compaction?.id ?? null,
     owner: "sdk-native-compaction",
@@ -153,7 +155,9 @@ export function buildTieredSnapshot(manager) {
     sourceHash: tieredHash(jsonl(covered)),
     semanticCompleteness: "not-proven",
     // This is an opaque SDK summary, NOT a fabricated structured fact database.
-    factsStatus: "not-extracted",
+    factsStatus: warmRecord ? "human-reviewed-extractive-not-lossless" : "not-extracted",
+    processor: warmRecord ? "flash-off-incremental" : "sdk-native",
+    factVersion: warmRecord?.version ?? null,
   };
   const identity = {
     sessionId,
@@ -198,7 +202,7 @@ export function buildTieredSnapshot(manager) {
       exportedRecords: rawEntries.length,
       entryIds: entries.map((entry) => entry.id),
     }),
-    "warm/facts.jsonl": "",
+    "warm/facts.jsonl": warmRecord ? jsonl(warmRecord.facts) : "",
     "warm/summary.md": warm.summary + (warm.summary ? "\n" : ""),
     "warm/manifest.json": json(warm),
     "hot/messages.jsonl": jsonl(hot),

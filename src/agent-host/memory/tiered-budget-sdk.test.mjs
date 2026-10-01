@@ -13,6 +13,8 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { TieredBudgetController } from "./tiered-budget-controller.ts";
+import { createFlashWarmRunner } from "./tiered-warm-remote.mjs";
+import { buildTieredSnapshot } from "./tiered-workspace.mjs";
 
 const usage = {
   input: 0,
@@ -34,6 +36,9 @@ async function fixture(
     beforeResponse = async () => {},
     installBudget = true,
     boundCwd,
+    warmRunner,
+    consentVersion,
+    confirm = async () => true,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "pi-tiered-budget-fictional-"));
@@ -118,6 +123,8 @@ async function fixture(
   if (warm) manager.appendCompaction("FICTIONAL_WARM_PLAN_ONLY_17", kept, 100);
   const prefix = readFileSync(manager.getSessionFile());
   const controller = new TieredBudgetController({
+    warmRunner: warmRunner ? (options) => warmRunner(runtime, options) : undefined,
+    consentVersion,
     supports: (model) => model.api === "openai-completions" && model.provider.startsWith("fictional-"),
   });
   const nativeSettings = SettingsManager.inMemory({
@@ -160,7 +167,7 @@ async function fixture(
   await session.bindExtensions({
     mode: "rpc",
     uiContext: {
-      confirm: async () => true,
+      confirm,
       notify: (text) => notices.push(text),
       setStatus: () => {},
       setWidget: () => {},
@@ -193,6 +200,172 @@ async function fixture(
 function plugin(factory) {
   return { name: "fictional-fixture-transform", factory };
 }
+
+function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {}) {
+  return (runtime, options) => {
+    runtime.registerProvider("deepseek", {
+      api: "openai-completions",
+      apiKey: "fictional-flash-only",
+      baseUrl: "https://api.deepseek.com",
+      models: [
+        {
+          id: "deepseek-flash",
+          name: "Fictional Flash transport",
+          reasoning: true,
+          input: ["text"],
+          contextWindow: 131072,
+          maxTokens: 2048,
+          cost: usage.cost,
+          compat: { thinkingFormat: "deepseek", maxTokensField: "max_tokens" },
+        },
+      ],
+    });
+    return createFlashWarmRunner({
+      runtime,
+      ...options,
+      transport: async (url, config) => {
+        assert.equal(new URL(url).origin, "https://api.deepseek.com");
+        assert.equal(config.redirect, "error");
+        const body = JSON.parse(config.body);
+        captures.push(body);
+        await wait();
+        const source = JSON.parse(body.messages[1].content);
+        const answer = JSON.stringify({
+          sourceHash: source.sourceHash,
+          facts: invalid
+            ? []
+            : source.records
+                .filter((record) => record.text.trim())
+                .map((record) => ({
+                  sourceId: record.sourceId,
+                  quote: record.text.startsWith("Fictional older") ? "Fictional older fact 17. " : record.text,
+                })),
+        });
+        return new globalThis.Response(
+          `data: ${JSON.stringify({ id: "fixture-flash", object: "chat.completion.chunk", created: 1, model: "deepseek-flash", choices: [{ index: 0, delta: { role: "assistant", content: answer }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "fixture-flash", object: "chat.completion.chunk", created: 1, model: "deepseek-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\ndata: [DONE]\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+  };
+}
+
+test("incremental Flash SDK transport mock: one reviewed native warm, no selected-model summary or previous warm resend", async (t) => {
+  const flash = [];
+  const f = await fixture(t, { oldText: "Fictional older fact 17. ".repeat(400), warmRunner: simulatedFlash(flash) });
+  await f.enable();
+  await f.session.prompt("/tiered-warm-flash");
+  assert.equal(flash.length, 0);
+  await f.session.prompt("Fictional next ordinary request after reviewed warm");
+  assert.equal(flash.length, 1);
+  assert.equal(f.captures.length, 1, "Only normal main request; no native summary fallback");
+  const compactions = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+  assert.equal(compactions.length, 1);
+  assert.equal(compactions[0].fromHook, true);
+  assert.equal(compactions[0].details.tieredWarm.review, "human-approved-not-proven");
+  assert.equal(f.session.model.id, "a");
+  assert.equal(flash[0].thinking.type, "disabled");
+  assert.ok(!Object.hasOwn(flash[0], "reasoning_effort"));
+  assert.ok(!flash[0].tools);
+  const snapshot = buildTieredSnapshot(f.manager);
+  assert.ok(snapshot.files["warm/facts.jsonl"].includes("Fictional older fact 17"));
+  assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length), f.prefix);
+  await f.session.prompt("Fictional later hot span");
+  await f.session.compact();
+  assert.equal(flash.length, 2);
+  assert.ok(!flash[1].messages[1].content.includes("older fact 17"), "Old cold source not resent");
+  const last = f.manager
+    .getBranch()
+    .filter((entry) => entry.type === "compaction")
+    .at(-1);
+  assert.equal(last.details.tieredWarm.version, 2);
+  assert.match(last.summary, /older fact 17/);
+});
+
+test("Flash source denial, malformed facts or final review denial never promote or invoke native-summary fallback", async (t) => {
+  for (const mode of ["source-denied", "bad-facts", "review-denied"]) {
+    const flash = [];
+    const f = await fixture(t, {
+      oldText: "Fictional older fact 17. ".repeat(400),
+      warmRunner: simulatedFlash(flash, { invalid: mode === "bad-facts" }),
+      confirm: async (title) =>
+        !(mode === "source-denied" && title.includes("ONE incremental")) &&
+        !(mode === "review-denied" && title.includes("Review omissions")),
+    });
+    await f.enable();
+    await f.session.prompt("/tiered-warm-flash");
+    await f.session.prompt("Fictional normal input despite failed warm");
+    assert.equal(flash.length, mode === "source-denied" ? 0 : 1);
+    assert.equal(f.manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
+    assert.equal(f.captures.length, 1, "Only ordinary main request with original hot");
+    await f.session.prompt("Fictional later input with failed warm paused");
+    assert.equal(flash.length, mode === "source-denied" ? 0 : 1, "No automatic repeated Flash attempt");
+  }
+});
+
+test("memory settings epoch change invalidates a pending Flash source even without model/branch change", async (t) => {
+  let epoch = 0;
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  let release;
+  const hold = new Promise((resolve) => {
+    release = resolve;
+  });
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(400),
+    consentVersion: () => epoch,
+    warmRunner: simulatedFlash(flash, {
+      wait: async () => {
+        started();
+        await hold;
+      },
+    }),
+  });
+  await f.enable();
+  await f.session.prompt("/tiered-warm-flash");
+  const request = f.session.prompt("Fictional pending consent epoch source");
+  await ready;
+  epoch += 2;
+  release();
+  await request;
+  assert.equal(flash.length, 1);
+  assert.equal(f.manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
+  assert.equal(f.captures.length, 1, "Only original-hot ordinary main request; no summary fallback");
+});
+
+test("Flash mock late completion after model switch cannot append its reviewed source", async (t) => {
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  let release;
+  const hold = new Promise((resolve) => {
+    release = resolve;
+  });
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(400),
+    warmRunner: simulatedFlash(flash, {
+      wait: async () => {
+        started();
+        await hold;
+      },
+    }),
+  });
+  await f.enable();
+  await f.session.prompt("/tiered-warm-flash");
+  const request = f.session.prompt("Fictional pending Flash source");
+  await ready;
+  await f.session.setModel(f.runtime.getModel("fictional-b", "b"));
+  release();
+  await request;
+  assert.equal(flash.length, 1);
+  assert.equal(f.manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
+  assert.equal(f.captures.length, 0);
+});
 
 test("budget controller installed but OFF is wire-identical to no controller across A-B-A", async (t) => {
   const baseline = await fixture(t, { installBudget: false, warm: true });
