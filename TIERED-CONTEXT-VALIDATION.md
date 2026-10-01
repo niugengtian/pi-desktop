@@ -1,5 +1,7 @@
 # TIER-01 — local native-context comparison, stage 1
 
+Historical checkpoint: `e426baf`. For the later, separately opted-in budget prototype and its narrower API/token-estimation limits, see [TIERED-BUDGET-VALIDATION.md](TIERED-BUDGET-VALIDATION.md).
+
 ## Identity / scope
 
 - Baseline: `3ffe707`; branch: `feat/tiered-context-compare`.
@@ -59,7 +61,7 @@ One combined tests/types command hit its 60s tool deadline after reporting all 3
 
 ## Next closure
 
-1. Unify native compaction preparation, model-window budgeting, protocol overhead/output reservation and calibrated token estimation without a second context slicer. Test smaller windows and refusal/waiting for non-fitting tool chains.
+1. TIER-02 adds a first native-budget/fail-closed-dispatch prototype (see linked report). Exact/calibrated tokenizer strategy, Codex/Responses and isolated GUI comparison remain pending; this is not full all-model budget acceptance.
 2. Approved Flash incremental warm generation through the SAME native compaction boundary; source/coverage/version/cancel/late/failure/semantic-quality checks, no permission inheritance from local export.
 3. Web consumes the Desktop projection only after real submission/retrieval closure and specific site/source authorization; actual request/response evidence, no implicit resend.
 4. Separate packaged candidate + real isolated Electron acceptance before any production installation.

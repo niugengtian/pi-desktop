@@ -47,6 +47,7 @@ import { installHerdrSessionRedaction } from "./herdr/session-redaction";
 import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
 import { createTaskMemoryExtension } from "./memory/extension";
 import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
+import { TieredBudgetController } from "./memory/tiered-budget-controller";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
 import { createLegacyChannelContextExtension } from "./legacy-channel-context";
 
@@ -1476,11 +1477,13 @@ export async function startRpcSession(
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
     let validationMemoryRuntime: Promise<ModelRuntime> | undefined;
+    const tieredBudget = new TieredBudgetController();
     const extensionFactories = [
       createLegacyChannelContextExtension(),
       createEphemeralContextExtension(ephemeralContext),
       createDesktopPromptExtension(promptPolicy),
       createTieredWorkspaceExtension(),
+      tieredBudget.extension(),
       createTaskMemoryExtension({
         onRemoteEvent: (event) => {
           const auditPath = process.env.PI_MEMORY_TEST_AUDIT_PATH;
@@ -1505,11 +1508,12 @@ export async function startRpcSession(
         },
       }),
     ];
-    const services = await createAgentSessionServices({
+    const nativeServices = await createAgentSessionServices({
       cwd,
       agentDir,
       resourceLoaderOptions: { extensionFactories },
     });
+    const services = { ...nativeServices, settingsManager: tieredBudget.wrapSettings(nativeServices.settingsManager) };
     const memoryRuntime = services.modelRuntime;
     const executionContext = await toolchainRuntime.createExecutionContext({
       cwd,
@@ -1544,6 +1548,7 @@ export async function startRpcSession(
       customTools,
       excludeTools: [...EXCLUDED_PI_TOOLS],
     });
+    tieredBudget.install(inner);
     const realSessionId = inner.sessionId as string;
 
     // Keep every tool registered so a session initialized with no tools can enable
