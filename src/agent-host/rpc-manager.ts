@@ -3,11 +3,13 @@ import {
   createAgentSessionServices,
   createBashToolDefinition,
   getAgentDir,
+  ModelRuntime,
   SessionManager,
   type CreateAgentSessionFromServicesOptions,
   type AgentSessionRuntimeDiagnostic,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
+import { appendFileSync } from "node:fs";
 import { EXCLUDED_PI_TOOLS, filterDesktopToolNames, validateDesktopToolNames } from "../shared/pi-tool-policy.ts";
 import { assertSessionWritable } from "./session-readonly.ts";
 import { resolveSessionModel } from "./session-model.ts";
@@ -1472,17 +1474,41 @@ export async function startRpcSession(
 
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
+    let validationMemoryRuntime: Promise<ModelRuntime> | undefined;
     const extensionFactories = [
       createLegacyChannelContextExtension(),
       createEphemeralContextExtension(ephemeralContext),
       createDesktopPromptExtension(promptPolicy),
-      createTaskMemoryExtension(),
+      createTaskMemoryExtension({
+        onRemoteEvent: (event) => {
+          const auditPath = process.env.PI_MEMORY_TEST_AUDIT_PATH;
+          if (process.env.PI_MEMORY_TEST_MODE === "1" && auditPath) {
+            appendFileSync(auditPath, JSON.stringify(event) + "\n", { mode: 0o600 });
+          }
+        },
+        getRemoteRuntime: () => {
+          // Generated isolation launcher may reference existing SDK credentials;
+          // never copy them into the sandbox or change the main-chat runtime.
+          const authPath = process.env.PI_MEMORY_TEST_AUTH_PATH;
+          if (process.env.PI_MEMORY_TEST_MODE === "1" && authPath) {
+            validationMemoryRuntime ??= ModelRuntime.create({
+              modelsPath: null,
+              authPath,
+              refreshOnCreate: false,
+              allowModelNetwork: false,
+            });
+            return validationMemoryRuntime;
+          }
+          return memoryRuntime;
+        },
+      }),
     ];
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
       resourceLoaderOptions: { extensionFactories },
     });
+    const memoryRuntime = services.modelRuntime;
     const executionContext = await toolchainRuntime.createExecutionContext({
       cwd,
       intent: "agent-shell",

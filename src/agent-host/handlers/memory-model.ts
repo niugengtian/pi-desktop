@@ -6,6 +6,9 @@ import type { ApiHandler } from "../../contract/rpc";
 import { RpcError } from "../../contract/types";
 import { DEFAULT_MEMORY_MODEL_SETTINGS, parseMemoryModelSettings } from "../../shared/memory-model";
 
+let consentEpoch = 0;
+export const memoryModelConsentEpoch = () => consentEpoch;
+
 const settingsPath = () => path.join(getAgentDir(), "task-memory.json");
 const versionOf = (raw: string | null) =>
   raw === null ? "missing" : `sha256:${createHash("sha256").update(raw).digest("hex")}`;
@@ -50,6 +53,7 @@ export const memoryModelHandlers = {
       }
       throw error;
     }
+    consentEpoch++; // Content hashes can repeat; revoked source grants must not revive.
     return { settings, version: versionOf(next) };
   },
   probe: async (params) => {
@@ -57,6 +61,13 @@ export const memoryModelHandlers = {
     const split = selected.indexOf("/");
     if (split <= 0 || split === selected.length - 1 || selected.startsWith("opencli-page/")) {
       return { ok: false, error: "Choose a non-Web Pi model as the memory processor." };
+    }
+    if (selected === "deepseek/deepseek-flash") {
+      return {
+        ok: false,
+        error:
+          "Remote memory requires explicit source review via /task-memory-enable-remote; no probe request was sent.",
+      };
     }
     const started = Date.now();
     try {

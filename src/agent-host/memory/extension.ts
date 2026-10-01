@@ -3,11 +3,13 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
+  type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { setImmediate, clearImmediate } from "node:timers";
-import { memoryModelHandlers } from "../handlers/memory-model";
+import { memoryModelHandlers, memoryModelConsentEpoch } from "../handlers/memory-model";
 import { createLocalMemoryRunner } from "./local-model.mjs";
+import { createFlashMemoryRunner, FLASH_MEMORY_MODEL, remoteSourcePreview } from "./remote-model.mjs";
 import { compileTaskMemory } from "./compile.mjs";
 import { memoryCandidates, splitMemoryTiers } from "./tiers.mjs";
 import { memoryRecordId, writeMemoryMarkdown } from "./markdown-store.mjs";
@@ -15,8 +17,14 @@ import type { TaskMemoryResult } from "./task-memory.mjs";
 
 const ENTRY_TYPE = "pi-desktop-task-memory";
 
-/** Local memory is staged for review, never injected into a provider request implicitly. */
-export function createTaskMemoryExtension() {
+/** Task memory is staged for review, never injected into main-chat context implicitly. */
+export function createTaskMemoryExtension({
+  getRemoteRuntime = () => undefined,
+  onRemoteEvent = () => {},
+}: {
+  getRemoteRuntime?: () => ModelRuntime | Promise<ModelRuntime> | undefined;
+  onRemoteEvent?: (event: { phase: string; at: string; status?: number }) => void;
+} = {}) {
   return {
     name: "pi-desktop-task-memory",
     hidden: true,
@@ -25,6 +33,18 @@ export function createTaskMemoryExtension() {
       let preview: Omit<TaskMemoryResult, "source"> | undefined;
       let stale = false;
       let pending = false;
+      let remoteConsent:
+        { manager: ExtensionContext["sessionManager"]; sessionId: string; version: string; epoch: number } | undefined;
+      const hasRemoteConsent = (ctx: ExtensionContext, version: string) => {
+        if (remoteConsent && (remoteConsent.version !== version || remoteConsent.epoch !== memoryModelConsentEpoch())) {
+          remoteConsent = undefined;
+        }
+        return Boolean(
+          remoteConsent &&
+          remoteConsent.manager === ctx.sessionManager &&
+          remoteConsent.sessionId === ctx.sessionManager.getSessionId(),
+        );
+      };
       let compiledRevision: { id: string; hash: string; path: string } | undefined;
       let job:
         | {
@@ -59,8 +79,12 @@ export function createTaskMemoryExtension() {
         previous.controller.abort();
         status(ctx);
       };
-      const restore = (ctx: ExtensionContext) => {
+      const revokeRemote = (ctx: ExtensionContext) => {
+        remoteConsent = undefined;
         cancel(ctx);
+      };
+      const restore = (ctx: ExtensionContext) => {
+        revokeRemote(ctx);
         current = undefined;
         preview = undefined;
         stale = false;
@@ -100,6 +124,12 @@ export function createTaskMemoryExtension() {
           return;
         }
         if (!snapshot.settings.enabled || !ctx.isIdle()) return;
+        const remote = snapshot.settings.primary === FLASH_MEMORY_MODEL;
+        if (remote && (snapshot.settings.fallback || !hasRemoteConsent(ctx, snapshot.version))) {
+          stale = true;
+          status(ctx, "Remote memory is paused; use /task-memory-enable-remote to review and approve sources.");
+          return;
+        }
         const manager = ctx.sessionManager;
         const sessionId = manager.getSessionId();
         const branchLeafId = manager.getLeafId();
@@ -126,6 +156,7 @@ export function createTaskMemoryExtension() {
               manager.getSessionId() === sessionId &&
               manager.getLeafId() === branchLeafId &&
               ctx.isIdle() &&
+              (!remote || hasRemoteConsent(ctx, snapshot.version)) &&
               memoryModelHandlers.get().version === snapshot.version
             );
           } catch {
@@ -135,8 +166,6 @@ export function createTaskMemoryExtension() {
         const update = async () => {
           let failed = false;
           try {
-            if (!isCurrent()) return;
-            const run = await createLocalMemoryRunner({ signal: controller.signal });
             if (!isCurrent()) return;
             const sourceCandidates = (branch: typeof entries) => {
               const projection = buildSessionProjection(branch, branchLeafId);
@@ -150,6 +179,25 @@ export function createTaskMemoryExtension() {
             const sourceFingerprint = fingerprint(candidates);
             const { hot, warmCandidates } = splitMemoryTiers(candidates);
             const selected = warmCandidates.length > 0 ? warmCandidates : hot;
+            if (remote) remoteSourcePreview(selected); // Fail closed before credentials/network for disallowed sources.
+            const runtime = remote ? await getRemoteRuntime() : undefined;
+            if (!isCurrent()) return;
+            const run = remote
+              ? createFlashMemoryRunner({
+                  runtime: runtime!,
+                  signal: controller.signal,
+                  authorized: () =>
+                    isCurrent() && fingerprint(sourceCandidates(manager.getBranch())) === sourceFingerprint,
+                  onEvent: (event) => {
+                    try {
+                      onRemoteEvent(event);
+                    } catch {
+                      /* optional validation observer */
+                    }
+                  },
+                })
+              : await createLocalMemoryRunner({ signal: controller.signal });
+            if (!isCurrent()) return;
             const nextId =
               selected.length > 0
                 ? memoryRecordId(
@@ -168,7 +216,7 @@ export function createTaskMemoryExtension() {
               root,
               signal: controller.signal,
               expectedHash,
-              previous: sameRecord ? (current ?? null) : null,
+              previous: !remote && sameRecord ? (current ?? null) : null,
               onFailure: (id, error) => {
                 if (isCurrent())
                   notify(
@@ -225,7 +273,12 @@ export function createTaskMemoryExtension() {
             }
           }
         };
-        status(ctx, "Updating local task memory in background; chat can continue…");
+        status(
+          ctx,
+          remote
+            ? "Updating task memory via DeepSeek Flash (thinking off); chat can continue…"
+            : "Updating local task memory in background; chat can continue…",
+        );
         task.timer = setImmediate(() => {
           task.timer = undefined;
           void update();
@@ -235,11 +288,11 @@ export function createTaskMemoryExtension() {
       pi.on("session_start", (_event, ctx) => restore(ctx));
       pi.on("session_tree", (_event, ctx) => restore(ctx));
       pi.on("session_compact", (_event, ctx) => restore(ctx));
-      pi.on("session_before_switch", (_event, ctx) => cancel(ctx));
-      pi.on("session_before_fork", (_event, ctx) => cancel(ctx));
-      pi.on("session_before_tree", (_event, ctx) => cancel(ctx));
-      pi.on("session_before_compact", (_event, ctx) => cancel(ctx));
-      pi.on("session_shutdown", (_event, ctx) => cancel(ctx));
+      pi.on("session_before_switch", (_event, ctx) => revokeRemote(ctx));
+      pi.on("session_before_fork", (_event, ctx) => revokeRemote(ctx));
+      pi.on("session_before_tree", (_event, ctx) => revokeRemote(ctx));
+      pi.on("session_before_compact", (_event, ctx) => revokeRemote(ctx));
+      pi.on("session_shutdown", (_event, ctx) => revokeRemote(ctx));
       pi.on("before_agent_start", (_event, ctx) => {
         cancel(ctx);
         stale = true;
@@ -252,11 +305,71 @@ export function createTaskMemoryExtension() {
         if (pending) schedule(ctx);
       });
 
+      pi.registerCommand("task-memory-enable-remote", {
+        description: "Review source and authorize DeepSeek Flash off for this session only",
+        handler: async (_args, ctx) => {
+          revokeRemote(ctx);
+          try {
+            const snapshot = memoryModelHandlers.get();
+            const epoch = memoryModelConsentEpoch();
+            if (
+              !snapshot.settings.enabled ||
+              snapshot.settings.primary !== FLASH_MEMORY_MODEL ||
+              snapshot.settings.fallback
+            ) {
+              notify(ctx, "Choose deepseek/deepseek-flash as enabled primary with no fallback first.", "warning");
+              return;
+            }
+            const manager = ctx.sessionManager;
+            const sessionId = manager.getSessionId();
+            const leaf = manager.getLeafId();
+            if (!leaf) return;
+            const candidates = memoryCandidates(buildSessionProjection(manager.getBranch(), leaf), {
+              sessionId,
+              branchLeafId: leaf,
+            });
+            if (candidates.at(-1)?.role === "user") candidates.pop();
+            const { hot, warmCandidates } = splitMemoryTiers(candidates);
+            const source = remoteSourcePreview(warmCandidates.length ? warmCandidates : hot);
+            const accepted = await ctx.ui.confirm(
+              "Allow DeepSeek V4.1 Flash background memory for this session?",
+              `Destination: https://api.deepseek.com (API usage charges; thinking disabled).\n\nCurrent source, unredacted (${source.length} characters):\n${source}\n\nAllow completed user/assistant text in this session, including FUTURE text, to be summarized by DeepSeek. No tools, attachments, compaction or branch summary sources. Up to 12000 source characters. Output privacy instructions do NOT redact input; do not paste secrets. Session switch, branch navigation, compaction, settings change, restart or /task-memory-disable-remote revokes permission. No other remote provider or fallback.`,
+            );
+            if (
+              !accepted ||
+              ctx.sessionManager !== manager ||
+              manager.getSessionId() !== sessionId ||
+              manager.getLeafId() !== leaf ||
+              memoryModelHandlers.get().version !== snapshot.version ||
+              memoryModelConsentEpoch() !== epoch
+            )
+              return;
+            remoteConsent = { manager, sessionId, version: snapshot.version, epoch };
+            schedule(ctx);
+          } catch {
+            notify(ctx, "Remote memory approval failed or source is unsupported; no source was sent.", "error");
+          }
+        },
+      });
+      pi.registerCommand("task-memory-disable-remote", {
+        description: "Revoke remote task memory permission for this session",
+        handler: async (_args, ctx) => {
+          revokeRemote(ctx);
+          notify(ctx, "Remote memory permission revoked; chat history was preserved.", "info");
+        },
+      });
+
       pi.registerCommand("task-memory-cancel", {
         description: "Cancel background local memory work without deleting chat history",
         handler: async (_args, ctx) => {
+          const active = Boolean(job || pending);
           cancel(ctx);
-          ctx.ui.notify("Background task memory cancelled; chat history was preserved.", "info");
+          ctx.ui.notify(
+            active
+              ? "Background task memory cancelled; chat history was preserved."
+              : "No background memory task is pending; chat history was preserved.",
+            "info",
+          );
         },
       });
       pi.registerCommand("task-memory-preview", {
@@ -272,7 +385,7 @@ export function createTaskMemoryExtension() {
             return;
           }
           await ctx.ui.confirm(
-            `Local task memory (${preview.modelId}${stale ? ", stale — not sent" : ""})`,
+            `Task memory (${preview.modelId}${stale ? ", stale — not current" : ""})`,
             `Source: ${preview.sourceChars} characters. Summary: ${preview.summaryChars}/4000 characters.\n\n${preview.summary}`,
           );
         },

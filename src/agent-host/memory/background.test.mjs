@@ -17,7 +17,12 @@ const root = path.resolve(import.meta.dirname, "..", "..", "..");
 let bundled;
 async function extension() {
   bundled ??= importTestBundle("memory-background", {
-    entryPoints: [path.join(import.meta.dirname, "extension.ts")],
+    stdin: {
+      contents: 'export * from "./extension.ts"; export { memoryModelHandlers } from "../handlers/memory-model.ts";',
+      resolveDir: import.meta.dirname,
+      sourcefile: "memory-background-fixture.ts",
+      loader: "ts",
+    },
     packages: "external",
     absWorkingDir: root,
     plugins: [
@@ -40,7 +45,7 @@ async function drain() {
   for (let i = 0; i < 4; i++) await new Promise(setImmediate);
 }
 let sequence = 0;
-async function fixture(t) {
+async function fixture(t, { remote = false } = {}) {
   const events = new Map();
   const commands = new Map();
   let resolve;
@@ -84,7 +89,7 @@ async function fixture(t) {
     ui: {
       setStatus: (_key, text) => state.statuses.push(text),
       notify: (text) => state.notifications.push(text),
-      confirm: async () => false,
+      confirm: async () => Boolean(state.accept),
     },
   };
   globalThis.__taskMemoryRunner =
@@ -103,12 +108,34 @@ async function fixture(t) {
       state.leaf = id;
     },
   };
-  (await extension())().factory(pi);
+  const settingsFile = path.join(agentDir, "task-memory.json");
+  if (remote)
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({ enabled: true, primary: "deepseek/deepseek-flash", fallback: null }, null, 2) + "\n",
+    );
+  const remoteRuntime = {
+    getModel: () => ({
+      provider: "deepseek",
+      id: "deepseek-flash",
+      api: "openai-completions",
+      baseUrl: "https://api.deepseek.com",
+    }),
+    completeSimple: async (model, context, options) => {
+      state.calls.push({ signal: options.signal, remote: true });
+      assert.equal(options.reasoning, "off");
+      options.onPayload({ model: model.id, thinking: { type: "disabled" }, messages: context.messages }, model);
+      const summary = await (state.nextGate ?? gate); // Mock provider deliberately ignores abort.
+      return { stopReason: "stop", content: [{ type: "text", text: summary }] };
+    },
+  };
+  (await extension())({ getRemoteRuntime: () => remoteRuntime }).factory(pi);
   await events.get("session_start")({}, ctx);
   t.after(async () => {
     events.get("session_shutdown")?.({}, ctx);
     resolve("目标：虚构任务已记录");
     await drain();
+    if (remote) rmSync(settingsFile, { force: true });
   });
   const file = path.join(
     agentDir,
@@ -116,7 +143,17 @@ async function fixture(t) {
     "hot",
     `${memoryRecordId(state.sessionId, ["goal", "answer"])}.md`,
   );
-  return { events, commands, ctx, state, file, resolve, entries, message: entries[1].message };
+  return {
+    events,
+    commands,
+    ctx,
+    state,
+    file,
+    resolve,
+    entries,
+    message: entries[1].message,
+    settingsHandlers: (await bundled).memoryModelHandlers,
+  };
 }
 async function start(f) {
   const result = f.events.get("turn_end")({ message: f.message }, f.ctx);
@@ -282,4 +319,78 @@ test("disabled settings during inference prevent publication", async (t) => {
   } finally {
     rmSync(settings);
   }
+});
+
+test("remote settings alone send nothing; explicit consent starts Flash off", async (t) => {
+  const f = await fixture(t, { remote: true });
+  f.events.get("turn_end")({ message: f.message }, f.ctx);
+  f.events.get("agent_settled")({}, f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 0);
+  await f.commands.get("task-memory-enable-remote")("", f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 0, "declined consent must not send");
+  f.state.accept = true;
+  await f.commands.get("task-memory-enable-remote")("", f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 1);
+  f.resolve("目标：保留虚构任务原名与顺序");
+  await drain();
+  assert.equal(f.state.ledgers.length, 1);
+  assert.equal(f.state.ledgers[0].modelId, "deepseek/deepseek-flash");
+});
+
+test("revoking remote permission cancels late results and prevents automatic sends", async (t) => {
+  const f = await fixture(t, { remote: true });
+  f.state.accept = true;
+  await f.commands.get("task-memory-enable-remote")("", f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 1);
+  await f.commands.get("task-memory-disable-remote")("", f.ctx);
+  assert.equal(f.state.calls[0].signal.aborted, true);
+  f.resolve("Late remote result");
+  await drain();
+  f.events.get("turn_end")({ message: f.message }, f.ctx);
+  f.events.get("agent_settled")({}, f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 1);
+  assert.equal(f.state.ledgers.length, 0);
+  assert.equal(existsSync(f.file), false);
+});
+
+test("restoring old settings never restores a revoked remote grant", async (t) => {
+  const f = await fixture(t, { remote: true });
+  f.state.accept = true;
+  await f.commands.get("task-memory-enable-remote")("", f.ctx);
+  await drain();
+  const original = f.settingsHandlers.get();
+  const disabled = f.settingsHandlers.set({
+    settings: { ...original.settings, enabled: false },
+    expectedVersion: original.version,
+  });
+  const restored = f.settingsHandlers.set({ settings: original.settings, expectedVersion: disabled.version });
+  assert.equal(restored.version, original.version, "regression deliberately restores the same hash");
+  f.resolve("Old authorized result");
+  await drain();
+  assert.equal(f.state.ledgers.length, 0, "revoked result cannot commit after config rollback");
+  f.events.get("turn_end")({ message: f.message }, f.ctx);
+  f.events.get("agent_settled")({}, f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 1, "config rollback cannot restore consent");
+});
+
+test("branch navigation revokes remote consent and prevents late writes", async (t) => {
+  const f = await fixture(t, { remote: true });
+  f.state.accept = true;
+  await f.commands.get("task-memory-enable-remote")("", f.ctx);
+  await drain();
+  f.events.get("session_before_tree")({}, f.ctx);
+  f.resolve("Old branch result");
+  await drain();
+  f.events.get("session_tree")({}, f.ctx);
+  f.events.get("turn_end")({ message: f.message }, f.ctx);
+  f.events.get("agent_settled")({}, f.ctx);
+  await drain();
+  assert.equal(f.state.calls.length, 1);
+  assert.equal(f.state.ledgers.length, 0);
 });

@@ -27,5 +27,8 @@ export function parseMemoryModelSettings(value: unknown): MemoryModelSettings {
   const primary = modelId(source.primary, false)!;
   const fallback = modelId(source.fallback, true);
   if (fallback === primary) throw new Error("Fallback must differ from primary.");
+  if (fallback === "deepseek/deepseek-flash" || (primary === "deepseek/deepseek-flash" && fallback)) {
+    throw new Error("Remote Flash memory requires no fallback; remote providers cannot be implicit backups.");
+  }
   return { enabled: source.enabled, primary, fallback };
 }

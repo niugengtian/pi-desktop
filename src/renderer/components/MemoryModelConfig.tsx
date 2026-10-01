@@ -19,7 +19,7 @@ export function MemoryModelConfig() {
         setVersion(snapshot.version);
         const providers = modelConfig.config.providers;
         if (!providers || typeof providers !== "object") return;
-        const choices: string[] = [];
+        const choices: string[] = ["deepseek/deepseek-flash"];
         for (const [provider, raw] of Object.entries(providers)) {
           if (!raw || typeof raw !== "object") continue;
           const entry = raw as { baseUrl?: string; models?: Array<{ id?: string }> };
@@ -78,9 +78,8 @@ export function MemoryModelConfig() {
     <section style={{ padding: 24, overflowY: "auto", width: "100%", maxWidth: 760, lineHeight: 1.6 }}>
       <h2 style={{ marginTop: 0 }}>Independent task memory</h2>
       <p>
-        Task memory is independent of the active chat model and OpenResty. Local summaries can be prepared after
-        completed turns and previewed. They are not automatically injected into API or Web requests; provider-switch and
-        context-budget delivery rules are not connected yet.
+        Task memory runs in the background after completed chat turns, independently of the active chat model. Summaries
+        are saved for review, never implicitly inserted into main-chat provider context.
       </p>
       <label style={{ display: "block", marginBottom: 20 }}>
         <input
@@ -91,9 +90,10 @@ export function MemoryModelConfig() {
         Enable independent memory (on by default)
       </label>
       <p>
-        Only registered loopback models are allowed for memory processing. Primary failure alerts locally and tries your
-        configured backup. If both fail, no new memory is delivered. Ordinary API messages remain unchanged; Web handoff
-        is not enabled yet.
+        Local mode accepts registered loopback models. Remote mode accepts only deepseek/deepseek-flash at
+        api.deepseek.com with thinking disabled and no backup. Saving settings does NOT authorize sending history: run
+        /task-memory-enable-remote in the session to review and approve current and future text. Permission is
+        session-only, revocable, and not persisted across restarts. No Web provider is used.
       </p>
       <datalist id="memory-local-models">
         {models.map((id) => (
@@ -117,8 +117,12 @@ export function MemoryModelConfig() {
               placeholder="provider/model-id"
               style={{ width: "min(100%, 430px)" }}
             />{" "}
-            <button type="button" disabled={!model} onClick={() => void check(model)}>
-              Check health
+            <button
+              type="button"
+              disabled={!model || model === "deepseek/deepseek-flash"}
+              onClick={() => void check(model)}
+            >
+              {model === "deepseek/deepseek-flash" ? "Approve sources in session" : "Check health"}
             </button>
             {probe[model] && <div role="status">{probe[model]}</div>}
           </div>
@@ -129,9 +133,10 @@ export function MemoryModelConfig() {
       </button>
       {message && <p role="status">{message}</p>}
       <p>
-        Run <code>/task-memory-preview</code> to inspect the last local summary. Three-tier promotion, conditional
-        API/Web delivery, and Feishu alert delivery are not connected yet. Sending any summary to a provider would be
-        external traffic.
+        Run <code>/task-memory-preview</code> to inspect the last summary and <code>/task-memory-disable-remote</code>
+        to revoke remote permission. Remote input is NOT automatically redacted; do not include secrets. Tool,
+        compaction and branch-summary sources are blocked in remote mode pending a separate data policy. Local mode
+        remains the default.
       </p>
     </section>
   );
