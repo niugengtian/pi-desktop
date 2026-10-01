@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import * as zlib from "node:zlib";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -27,6 +28,8 @@ const usage = {
 async function fixture(
   t,
   {
+    api = "openai-completions",
+    codexReasoning = false,
     extensions = [],
     oldText,
     warm = false,
@@ -49,9 +52,11 @@ async function fixture(
   mkdirSync(agentDir);
   const captures = [];
   const server = createServer(async (req, res) => {
-    let bytes = "";
-    for await (const chunk of req) bytes += chunk;
-    const body = JSON.parse(bytes);
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let bytes = Buffer.concat(chunks);
+    if (req.headers["content-encoding"] === "zstd") bytes = zlib.zstdDecompressSync(bytes);
+    const body = JSON.parse(bytes.toString("utf8"));
     captures.push({ path: req.url, body }); // No headers/keys retained.
     if (status !== 200) {
       res.writeHead(status, { "content-type": "application/json" });
@@ -61,6 +66,62 @@ async function fixture(
     await beforeResponse(body, captures.length);
     if (res.destroyed) return;
     res.writeHead(200, { "content-type": "text/event-stream" });
+    if (api === "openai-codex-responses") {
+      const response = reply(body, captures.length);
+      const calls = typeof response === "object" ? response.toolCalls : undefined;
+      const text = calls ? "" : response;
+      const message = {
+        id: `msg_fixture_${captures.length}`,
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text, annotations: [] }],
+      };
+      const reasoning = {
+        id: `rs_fixture_${captures.length}`,
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "Fictional reasoning summary" }],
+        encrypted_content: "opaque-virtual-replay-not-text-tokens",
+      };
+      const events = [{ type: "response.created", response: { id: "resp_fixture", status: "in_progress" } }];
+      const output = calls
+        ? calls.map((call, index) => ({
+            type: "function_call",
+            id: `fc_fixture_${index}`,
+            call_id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+            status: "completed",
+          }))
+        : codexReasoning
+          ? [reasoning, message]
+          : [message];
+      output.forEach((item, index) =>
+        events.push(
+          {
+            type: "response.output_item.added",
+            output_index: index,
+            item: { ...item, content: item.type === "message" ? [] : undefined },
+          },
+          { type: "response.output_item.done", output_index: index, item },
+        ),
+      );
+      events.push({
+        type: "response.completed",
+        response: {
+          id: "resp_fixture",
+          status: "completed",
+          output,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 50,
+            output_tokens_details: { reasoning_tokens: codexReasoning ? 20 : 0 },
+          },
+        },
+      });
+      res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+      return;
+    }
     const base = { id: "fixture-response", object: "chat.completion.chunk", created: 1, model: body.model };
     const response = reply(body, captures.length);
     const toolCalls = typeof response === "object" ? response.toolCalls : undefined;
@@ -86,8 +147,11 @@ async function fixture(
     ["b", 4096],
   ])
     runtime.registerProvider(`fictional-${id}`, {
-      api: "openai-completions",
-      apiKey: "fictional-local-only",
+      api,
+      apiKey:
+        api === "openai-codex-responses"
+          ? `fake.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-only" } })).toString("base64")}.fake`
+          : "fictional-local-only",
       baseUrl: `http://127.0.0.1:${server.address().port}/${id}`,
       models: [
         {
@@ -111,7 +175,7 @@ async function fixture(
       content: [{ type: "text", text: content }],
       provider: "fictional-a",
       model: "a",
-      api: "openai-completions",
+      api,
       usage,
       stopReason: "stop",
       timestamp: 3,
@@ -125,7 +189,8 @@ async function fixture(
   const controller = new TieredBudgetController({
     warmRunner: warmRunner ? (options) => warmRunner(runtime, options) : undefined,
     consentVersion,
-    supports: (model) => model.api === "openai-completions" && model.provider.startsWith("fictional-"),
+    supports: (model) =>
+      ["openai-completions", "openai-codex-responses"].includes(model.api) && model.provider.startsWith("fictional-"),
   });
   const nativeSettings = SettingsManager.inMemory({
     compaction: { enabled: false },
@@ -200,6 +265,87 @@ async function fixture(
 function plugin(factory) {
   return { name: "fictional-fixture-transform", factory };
 }
+
+test("Codex actual SSE request, catalog-output reserve and opaque replay across A-B-A", async (t) => {
+  const f = await fixture(t, { api: "openai-codex-responses", codexReasoning: true, warm: true });
+  await f.enable();
+  await f.session.prompt("Fictional Codex A task");
+  await f.session.setModel(f.runtime.getModel("fictional-b", "b"));
+  await f.session.prompt("Fictional Codex B task");
+  await f.session.setModel(f.runtime.getModel("fictional-a", "a"));
+  await f.session.prompt("Fictional Codex A again");
+  assert.equal(f.captures.length, 3);
+  assert.ok(f.captures.every((capture) => capture.path.includes("/codex/responses")));
+  assert.ok(f.captures.every(({ body }) => body.store === false && !Object.hasOwn(body, "max_output_tokens")));
+  assert.ok(f.captures.at(-1).body.input.some((item) => item.type === "reasoning"));
+  assert.equal(f.controller.lastReport.outputReserved, 256);
+  assert.ok(f.controller.lastReport.totalEstimate.opaqueReserved > 0);
+  assert.equal(f.controller.lastReport.action, "allow");
+});
+
+test("Codex SDK executes a complete parallel tool batch, then blocks its oversized continuation without splitting history", async (t) => {
+  let executions = 0;
+  const f = await fixture(t, {
+    api: "openai-codex-responses",
+    customTools: [
+      {
+        name: "fictional_batch",
+        label: "Fictional batch",
+        description: "Fictional read-only result",
+        parameters: Type.Object({}),
+        execute: async () => {
+          executions++;
+          return {
+            content: [{ type: "text", text: "Fictional completed tool result ".repeat(2000) }],
+            details: { fictionalOnly: true },
+          };
+        },
+      },
+    ],
+    reply: (_body, index) =>
+      index === 1
+        ? {
+            toolCalls: [0, 1].map((i) => ({
+              index: i,
+              id: `call_fixture_${i}`,
+              type: "function",
+              function: { name: "fictional_batch", arguments: "{}" },
+            })),
+          }
+        : "FICTIONAL_REPLY",
+  });
+  await f.enable();
+  await f.session.prompt("Fictional parallel tool task");
+  assert.equal(f.captures.length, 1);
+  const entries = f.manager.getBranch().filter((e) => e.type === "message");
+  assert.equal(executions, 2);
+  assert.equal(entries.filter((e) => e.message.role === "toolResult").length, 2);
+  assert.equal(
+    entries
+      .filter((e) => e.message.role === "assistant")
+      .flatMap((e) => e.message.content)
+      .filter((block) => block.type === "toolCall").length,
+    2,
+  );
+  assert.ok(!f.manager.getBranch().some((e) => e.type === "compaction"));
+});
+
+test("Codex final input transform overrun blocks before HTTP with no WS/retry fallback", async (t) => {
+  const extension = {
+    name: "fictional-codex-overrun",
+    factory(pi) {
+      pi.on("before_provider_request", ({ payload }) => ({
+        ...payload,
+        input: [...payload.input, { role: "user", content: [{ type: "input_text", text: "x".repeat(40000) }] }],
+      }));
+    },
+  };
+  const f = await fixture(t, { api: "openai-codex-responses", extensions: [extension] });
+  await f.enable();
+  await f.session.prompt("Fictional small request");
+  assert.equal(f.captures.length, 0);
+  assert.equal(f.controller.lastReport.action, "block");
+});
 
 function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {}) {
   return (runtime, options) => {

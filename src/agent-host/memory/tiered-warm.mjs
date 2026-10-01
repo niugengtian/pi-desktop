@@ -24,6 +24,7 @@ function sourceText(message, pending) {
   if (!Array.isArray(blocks)) fail();
   const text = blocks
     .map((block) => {
+      if (block.type === "thinking") return ""; // Explicit visible-task-text scope; never transmit reasoning/signatures.
       if (block.type === "text" && typeof block.text === "string") return block.text;
       if (
         message.role === "assistant" &&
@@ -114,6 +115,7 @@ export function buildWarmPlan(manager, preparation) {
     sourceHash: hash(message),
     role: message.role,
     toolError: message.role === "toolResult" ? Boolean(message.isError) : null,
+    omittedReasoning: Array.isArray(message.content) && message.content.some((block) => block.type === "thinking"),
     text: sourceText(message, pending),
   }));
   if (pending.size || !records.some(({ text }) => text.trim()) || records.length > 128) fail();
@@ -223,7 +225,12 @@ export function validateWarmAnswer(plan, answer) {
         parentEntryId: plan.parentEntryId,
         parentSummaryHash: plan.parentSummaryHash,
         sourceHash: plan.sourceHash,
-        delta: plan.records.map(({ sourceId, sourceHash }) => ({ sourceId, sourceHash })),
+        deltaScope: "visible-task-text-only; reasoning remains cold, not replayed by warm",
+        delta: plan.records.map(({ sourceId, sourceHash, omittedReasoning }) => ({
+          sourceId,
+          sourceHash,
+          omittedReasoning,
+        })),
         facts: unique,
         opaqueSummary: plan.opaqueSummary,
         summaryHash: hash(summary),

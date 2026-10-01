@@ -16,6 +16,7 @@ import {
   type BudgetReport,
 } from "./tiered-budget.mjs";
 import { tieredHash } from "./tiered-workspace.mjs";
+import { planCodexBudget, nativeBudgetView, checkCodexDispatch } from "./tiered-codex-budget.mjs";
 import { buildWarmPlan, validateWarmAnswer, WARM_INSTRUCTIONS, type WarmRecord } from "./tiered-warm.mjs";
 import { WARM_TARGET, type WarmRunnerFactory } from "./tiered-warm-remote.mjs";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
@@ -26,7 +27,13 @@ function refuse(reason: string): never {
   throw new Error(`TIERED_POLICY_REFUSED: ${reason}`);
 }
 const chatOutputLimit = (model: SupportedModel) =>
-  Math.min(model.maxTokens, 2048, Math.max(1, Math.floor(model.contextWindow / 4)));
+  model.api === "openai-codex-responses"
+    ? model.maxTokens
+    : Math.min(model.maxTokens, 2048, Math.max(1, Math.floor(model.contextWindow / 4)));
+
+export const supportsTieredModel = (model: SupportedModel) =>
+  (model.api === "openai-completions" && ["openai", "deepseek"].includes(model.provider)) ||
+  (model.api === "openai-codex-responses" && model.provider === "openai-codex");
 
 /** Experimental, session-only byte-BPE text policy. Native SDK remains the sole compressor. */
 export class TieredBudgetController {
@@ -56,8 +63,7 @@ export class TieredBudgetController {
     policy = TIERED_BUDGET,
     warmRunner,
     consentVersion = () => 0,
-    supports = (model: SupportedModel) =>
-      model.api === "openai-completions" && ["openai", "deepseek"].includes(model.provider),
+    supports = supportsTieredModel,
   }: {
     policy?: BudgetPolicy;
     supports?: (model: SupportedModel) => boolean;
@@ -222,13 +228,23 @@ export class TieredBudgetController {
         refuse("unsupported-or-replaced-session-model");
       this.sourceFingerprint();
       const projectionHash = tieredHash(JSON.stringify(session.sessionManager.buildSessionProjection().messages));
+      let approvedCodexPayload: string | undefined;
+      let codexDispatched = false;
       const operation = this.compacting ? "native-compaction" : "chat";
       if (operation === "native-compaction" && this.warmMode) refuse("native-summary-fallback-prohibited");
       if (operation === "chat" && options?.sessionId !== session.sessionId) refuse("auxiliary-operation-not-supported");
       const outputReserved =
-        operation === "chat" ? chatOutputLimit(model) : Math.min(model.maxTokens, this.policy.warmTarget);
+        model.api === "openai-codex-responses"
+          ? model.maxTokens
+          : operation === "chat"
+            ? chatOutputLimit(model)
+            : Math.min(model.maxTokens, this.policy.warmTarget);
+      const budgetView = nativeBudgetView(context.messages);
       if (
-        estimateEnvelope(context, context.messages.length).estimatedTokens + outputReserved + this.policy.safety >
+        estimateEnvelope({ ...context, messages: budgetView.messages }, context.messages.length).estimatedTokens +
+          budgetView.opaqueReserved +
+          outputReserved +
+          this.policy.safety >
         model.contextWindow
       )
         refuse("preflight-envelope-reservation");
@@ -240,6 +256,26 @@ export class TieredBudgetController {
         ...options,
         // Native summary stays on its selected model, never an implicit Flash/fallback request.
         maxTokens: outputReserved,
+        ...(model.api === "openai-codex-responses"
+          ? {
+              transport: "sse" as const,
+              maxRetries: 0,
+              fetch: async (url: string | URL | Request, init?: RequestInit) => {
+                if (
+                  codexDispatched ||
+                  init?.method !== "POST" ||
+                  this.grant !== grant ||
+                  this.generation !== generation ||
+                  options?.signal?.aborted
+                )
+                  refuse("codex-dispatch-invalidated");
+                this.sourceFingerprint();
+                checkCodexDispatch(url, init?.body, model, approvedCodexPayload);
+                codexDispatched = true;
+                return (options?.fetch ?? globalThis.fetch)(url, { ...init, redirect: "error" });
+              },
+            }
+          : {}),
         onPayload: async (payload, actualModel) => {
           const transformed = await options?.onPayload?.(payload, actualModel);
           this.sourceFingerprint();
@@ -252,11 +288,21 @@ export class TieredBudgetController {
           // Detach accessors/toJSON/live references before validation and provider serialization.
           const finalPayload = JSON.parse(JSON.stringify(transformed ?? payload)) as Record<string, unknown>;
           const output = finalPayload.max_tokens ?? finalPayload.max_completion_tokens;
-          if (typeof output !== "number" || output > outputReserved) refuse("output-reservation-mutated");
+          if (model.api !== "openai-codex-responses" && (typeof output !== "number" || output > outputReserved))
+            refuse("output-reservation-mutated");
           // No throwing extension hook here: this callback is the SDK provider's final pre-fetch callback.
-          const report = planWireBudget(finalPayload, actualModel, { warmText, operation, policy: this.policy });
+          const report =
+            model.api === "openai-codex-responses"
+              ? planCodexBudget(finalPayload, actualModel, {
+                  nativeMessages: context.messages,
+                  warmText,
+                  operation,
+                  policy: this.policy,
+                })
+              : planWireBudget(finalPayload, actualModel, { warmText, operation, policy: this.policy });
           this.lastReport = report; // Numeric/algorithm metadata only, no history/payload/headers.
           if (report.action !== "allow") refuse(report.reasons.join(","));
+          if (model.api === "openai-codex-responses") approvedCodexPayload = JSON.stringify(finalPayload);
           return finalPayload;
         },
       });
@@ -285,7 +331,7 @@ export class TieredBudgetController {
             if (!session || !ctx.hasUI || !ctx.isIdle() || !ctx.model || !this.supported(ctx.model)) {
               notify(
                 ctx,
-                "Requires idle/UI approval and supported byte-BPE OpenAI-completions text model; no fallback.",
+                "Requires idle/UI approval and supported OpenAI-completions or Codex-Responses text model; no fallback.",
                 "warning",
               );
               return;
@@ -309,9 +355,9 @@ export class TieredBudgetController {
               [
                 "No request is sent by enabling. Next ordinary requests retain native system/tools + one native warm summary + full hot messages.",
                 `Text-only conservative ESTIMATE, not exact token counting: hot target ${this.policy.hotTarget}/max ${this.policy.hotMax}; warm target ${this.policy.warmTarget}/max ${this.policy.warmMax}.`,
-                "Byte-BPE JSON envelope/framing may refuse much earlier than a tokenizer; provider framing is not officially calibrated. Images/opaque thinking/other APIs are unsupported.",
+                "Byte-BPE JSON envelope/framing may refuse much earlier than a tokenizer; provider framing is not officially calibrated. Images/unmeasured opaque thinking/other APIs are unsupported. Codex replay reserves provider-reported output+reasoning per opaque item, never base64 bytes as tokens; this is an assumption, not a certified tokenizer.",
                 "SDK remains the only compaction owner, on the currently selected model. Native compaction may send the existing source to that normal API; this is not permission to send it to Flash or Web.",
-                "System/tool schemas and safety reduce available history; normal output is capped at min(model maximum, 2048, one quarter of window). Current user span/tool chain cannot be silently cut; non-fitting requests stop without HTTP dispatch.",
+                "System/tool schemas and safety reduce history; Completions output is capped at min(model maximum, 2048, quarter window). Codex does not send an output cap: reserve the FULL model catalog maximum (not an enforced cap); opted-in Codex uses SSE with no WebSocket fallback/retries. Current user span/tool chain cannot be silently cut; non-fitting requests stop without HTTP dispatch.",
                 "Failed/cancelled warm generation pauses automatic compaction until explicit manual /compact or re-approval. For this session only: suppress cache warming and automatic retries. No settings-file writes, source deletion, Web/remote fallback or extra handoff prompt.",
                 "Navigation/replacement/restart revokes this experimental policy. Local workspace export has a separate approval.",
               ].join("\n"),
@@ -444,7 +490,7 @@ export class TieredBudgetController {
               }
               const approved = await ctx.ui.confirm(
                 "Approve this ONE incremental Flash payload?",
-                `Target: ${WARM_TARGET}\nOutput cap ≤2048; thinking disabled; no tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS, not a local-only service.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. No tools executed by Flash. Source permission expires with this attempt.\nSYSTEM:\n${WARM_INSTRUCTIONS}\nUSER:\n${plan.payload}`,
+                `Target: ${WARM_TARGET}\nOutput cap ≤2048; thinking disabled; no tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS, not a local-only service.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. Reasoning/signatures are NOT sent: only visible task text/tool evidence is organized; reasoning stays in native cold history and leaves active replay after approved compaction. No tools executed by Flash. Source permission expires with this attempt.\nSYSTEM:\n${WARM_INSTRUCTIONS}\nUSER:\n${plan.payload}`,
               );
               if (!approved || !authorized()) return { cancel: true };
               const reply = await this.warmRunner({ signal: event.signal, authorized })(plan);

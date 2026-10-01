@@ -47,7 +47,7 @@ import { installHerdrSessionRedaction } from "./herdr/session-redaction";
 import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
 import { createTaskMemoryExtension } from "./memory/extension";
 import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
-import { TieredBudgetController } from "./memory/tiered-budget-controller";
+import { TieredBudgetController, supportsTieredModel } from "./memory/tiered-budget-controller";
 import { createFlashWarmRunner } from "./memory/tiered-warm-remote.mjs";
 import { memoryModelConsentEpoch } from "./handlers/memory-model";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
@@ -1479,9 +1479,37 @@ export async function startRpcSession(
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
     let validationMemoryRuntime: Promise<ModelRuntime> | undefined;
+    const getRemoteMemoryRuntime = (): ModelRuntime | Promise<ModelRuntime> => {
+      const authPath = process.env.PI_MEMORY_TEST_AUTH_PATH;
+      if (process.env.PI_MEMORY_TEST_MODE === "1" && authPath) {
+        validationMemoryRuntime ??= ModelRuntime.create({
+          modelsPath: null,
+          authPath,
+          refreshOnCreate: false,
+          allowModelNetwork: false,
+        });
+        return validationMemoryRuntime;
+      }
+      return memoryRuntime;
+    };
     const tieredBudget: TieredBudgetController = new TieredBudgetController({
-      warmRunner: (options) => createFlashWarmRunner({ ...options, runtime: memoryRuntime }),
+      warmRunner: (options) => async (plan) =>
+        createFlashWarmRunner({
+          ...options,
+          runtime: await getRemoteMemoryRuntime(),
+          onEvent: (event) => {
+            const auditPath = process.env.PI_TIERED_TEST_AUDIT_PATH;
+            if (process.env.PI_MEMORY_TEST_MODE === "1" && auditPath)
+              appendFileSync(auditPath, JSON.stringify(event) + "\n", { mode: 0o600 });
+          },
+        })(plan),
       consentVersion: memoryModelConsentEpoch,
+      supports: (model) =>
+        supportsTieredModel(model) ||
+        (process.env.PI_MEMORY_TEST_MODE === "1" &&
+          model.provider === "tier-compare-codex" &&
+          model.api === "openai-codex-responses" &&
+          /^http:\/\/127\.0\.0\.1:\d+(?:\/|$)/.test(model.baseUrl ?? "")),
     });
     const extensionFactories = [
       createLegacyChannelContextExtension(),
@@ -1496,21 +1524,7 @@ export async function startRpcSession(
             appendFileSync(auditPath, JSON.stringify(event) + "\n", { mode: 0o600 });
           }
         },
-        getRemoteRuntime: () => {
-          // Generated isolation launcher may reference existing SDK credentials;
-          // never copy them into the sandbox or change the main-chat runtime.
-          const authPath = process.env.PI_MEMORY_TEST_AUTH_PATH;
-          if (process.env.PI_MEMORY_TEST_MODE === "1" && authPath) {
-            validationMemoryRuntime ??= ModelRuntime.create({
-              modelsPath: null,
-              authPath,
-              refreshOnCreate: false,
-              allowModelNetwork: false,
-            });
-            return validationMemoryRuntime;
-          }
-          return memoryRuntime;
-        },
+        getRemoteRuntime: getRemoteMemoryRuntime,
       }),
     ];
     const nativeServices = await createAgentSessionServices({

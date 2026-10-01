@@ -15,4 +15,5 @@ export function createFlashWarmRunner(options: {
   signal?: AbortSignal;
   authorized: () => boolean;
   transport?: typeof fetch;
+  onEvent?: (event: Record<string, string | number | undefined>) => void;
 }): (plan: WarmPlan) => Promise<WarmReply>;

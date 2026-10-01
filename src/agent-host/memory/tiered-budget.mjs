@@ -1,4 +1,5 @@
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import { nativeBudgetView } from "./tiered-codex-budget.mjs";
 
 export const TIERED_BUDGET = Object.freeze({
   hotTarget: 8000,
@@ -147,6 +148,8 @@ export function nativeBudgetHints(messages, model, sdkEstimate, policy = TIERED_
   validatePolicy(policy);
   if (!integer(model.contextWindow) || !integer(model.contextWindow + 1) || !integer(model.maxTokens))
     fail("invalid-model-budget");
+  const view = nativeBudgetView(messages);
+  messages = view.messages;
   const protocol = [
     { role: "system", content: getCurrentSystemPrompt(messages), toolsAdded: getCurrentTools(messages) },
   ];
@@ -161,7 +164,16 @@ export function nativeBudgetHints(messages, model, sdkEstimate, policy = TIERED_
     }
   const protocolEstimate = estimateEnvelope(protocol, protocol.length).estimatedTokens;
   const warmEstimate = warm.length ? estimateEnvelope(warm, warm.length).estimatedTokens : 0;
-  const hotEstimate = estimateEnvelope(hot, hot.length).estimatedTokens;
+  const replayReserved = (items) =>
+    items.reduce(
+      (sum, message) =>
+        sum +
+        (Array.isArray(message.content)
+          ? message.content.reduce((n, block) => n + (block.opaqueReplayReserved ?? 0), 0)
+          : 0),
+      0,
+    );
+  const hotEstimate = estimateEnvelope(hot, hot.length).estimatedTokens + replayReserved(hot);
   const available = Math.max(
     0,
     model.contextWindow - model.maxTokens - policy.safety - protocolEstimate - warmEstimate,
@@ -177,7 +189,7 @@ export function nativeBudgetHints(messages, model, sdkEstimate, policy = TIERED_
   for (let index = suffixStart - 1; index >= 0; index--) {
     if (hot[index].role !== "user") continue;
     const candidate = hot.slice(index);
-    if (estimateEnvelope(candidate, candidate.length).estimatedTokens > hotTarget) break;
+    if (estimateEnvelope(candidate, candidate.length).estimatedTokens + replayReserved(candidate) > hotTarget) break;
     suffixStart = index;
   }
   const suffixSdkEstimate = hot.slice(suffixStart).reduce((sum, message) => sum + sdkEstimate(message), 0);
@@ -185,7 +197,8 @@ export function nativeBudgetHints(messages, model, sdkEstimate, policy = TIERED_
     measurement: "conservative-native-json-envelope; SDK cut hint is separately chars/4, not exact",
     needsNativeCompaction:
       hotEstimate > hotTarget &&
-      estimateEnvelope(protectedSpan, protectedSpan.length).estimatedTokens <= Math.min(available, policy.hotMax) &&
+      estimateEnvelope(protectedSpan, protectedSpan.length).estimatedTokens + replayReserved(protectedSpan) <=
+        Math.min(available, policy.hotMax) &&
       warmEstimate <= policy.warmMax,
     hotTarget,
     hotEstimate,

@@ -94,6 +94,26 @@ test("completed tool data is quoted with error provenance; pending tools or imag
   assert.throws(() => buildWarmPlan(media.manager, media.prepare()), /retained/);
 });
 
+test("explicit visible-task-only scope never sends reasoning text or encrypted signatures", () => {
+  const f = fixture();
+  const old = f.manager.getBranch().find((entry) => entry.type === "message" && entry.message.role === "assistant");
+  old.message.content.unshift({
+    type: "thinking",
+    thinking: "hidden-virtual-summary-not-task-evidence",
+    thinkingSignature: JSON.stringify({
+      type: "reasoning",
+      id: "rs_virtual",
+      encrypted_content: "cipher-virtual-not-to-send",
+    }),
+  });
+  const plan = buildWarmPlan(f.manager, f.prepare());
+  assert.ok(plan.records.some((record) => record.omittedReasoning));
+  assert.ok(!plan.payload.includes("cipher-virtual"));
+  assert.ok(!plan.payload.includes("hidden-virtual"));
+  const candidate = validateWarmAnswer(plan, f.answer(plan));
+  assert.match(candidate.details.tieredWarm.deltaScope, /visible-task-text-only/);
+});
+
 test("native prepared prefix only; exclude current/system and map exact entry/message fingerprints", () => {
   const f = fixture();
   assert.throws(() => {

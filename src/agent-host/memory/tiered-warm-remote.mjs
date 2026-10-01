@@ -1,8 +1,15 @@
 import { WARM_INSTRUCTIONS } from "./tiered-warm.mjs";
+import { createHash } from "node:crypto";
 import { planWireBudget } from "./tiered-budget.mjs";
 export const WARM_TARGET = "deepseek/deepseek-flash @ https://api.deepseek.com (thinking disabled)";
 /** Transport injection exists for isolated tests, never a fallback or selectable endpoint. */
-export function createFlashWarmRunner({ runtime, signal, authorized, transport = globalThis.fetch }) {
+export function createFlashWarmRunner({
+  runtime,
+  signal,
+  authorized,
+  transport = globalThis.fetch,
+  onEvent = () => {},
+}) {
   return async (plan) => {
     let dispatched = false;
     const allowed = () => !signal?.aborted && authorized();
@@ -79,7 +86,18 @@ export function createFlashWarmRunner({ runtime, signal, authorized, transport =
             const wire = typeof options.body === "string" ? JSON.parse(options.body) : null;
             validate(wire, model); // Re-check actual serialized JSON, not only the earlier callback.
             dispatched = true;
-            return transport(url, { ...options, redirect: "error" });
+            onEvent({
+              phase: "dispatch",
+              at: new Date().toISOString(),
+              sourceHash: plan.sourceHash,
+              wireHash: createHash("sha256").update(options.body).digest("hex"),
+              model: "deepseek/deepseek-flash",
+              origin: target.origin,
+              thinking: "disabled",
+            });
+            const response = await transport(url, { ...options, redirect: "error" });
+            onEvent({ phase: "response", at: new Date().toISOString(), status: response.status });
+            return response;
           },
         },
       );
@@ -91,8 +109,17 @@ export function createFlashWarmRunner({ runtime, signal, authorized, transport =
         (result.usage?.reasoning ?? 0) > 0
       )
         throw new Error("Warm result refused");
+      onEvent({
+        phase: "completed",
+        at: new Date().toISOString(),
+        input: result.usage?.input,
+        output: result.usage?.output,
+        reasoning: result.usage?.reasoning,
+        totalTokens: result.usage?.totalTokens,
+      });
       return { answer: result.content.map((part) => part.text).join(""), usage: result.usage };
     } catch {
+      onEvent({ phase: signal?.aborted ? "cancelled" : "failed", at: new Date().toISOString() });
       signal?.throwIfAborted();
       throw new Error(
         "Flash incremental warm failed or consent changed; no retry, native-summary or provider fallback.",
