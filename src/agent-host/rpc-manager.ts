@@ -46,6 +46,7 @@ import { createHerdrToolDefinitions, herdrToolNamesForRuntime, isHerdrToolName }
 import { installHerdrSessionRedaction } from "./herdr/session-redaction";
 import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
 import { createTaskMemoryExtension } from "./memory/extension";
+import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
 import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
 import { createLegacyChannelContextExtension } from "./legacy-channel-context";
 
@@ -1479,6 +1480,7 @@ export async function startRpcSession(
       createLegacyChannelContextExtension(),
       createEphemeralContextExtension(ephemeralContext),
       createDesktopPromptExtension(promptPolicy),
+      createTieredWorkspaceExtension(),
       createTaskMemoryExtension({
         onRemoteEvent: (event) => {
           const auditPath = process.env.PI_MEMORY_TEST_AUDIT_PATH;
