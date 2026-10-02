@@ -1,5 +1,7 @@
 # Tiered-context local production package — 2026-10-02
 
+**Startup incident follow-up:** the first ad-hoc production package below passed codesign verification but failed the macOS loader because its hardened main and Electron framework did not have compatible Team IDs. The user rolled back successfully. See [LOCAL-MAC-STARTUP-VALIDATION.md](LOCAL-MAC-STARTUP-VALIDATION.md) for the corrected local signing, actual Main/Renderer/Host startup checks and updated installation source. Do not treat the original signature check or comparison GUI as proof that the original formal bundle could launch.
+
 ## Authorized scope
 
 User requested GitHub submission, production overwrite installation, and separate overwrite/rollback commands. Push the existing **feat/tiered-context-compare** branch to configured `niugengtian/pi-desktop`; do not force-push/merge upstream main/create a public binary release. Deliver the normal production app, **not** the fictional comparison launcher/model configuration. No settings, auth, session, vault or Web components are copied/restored/rewritten by this installer. No further model calls.
