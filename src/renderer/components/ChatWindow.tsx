@@ -1103,6 +1103,21 @@ function ExtensionDialog({
   const { t } = useI18n();
   const [value, setValue] = useState(request.method === "editor" ? (request.prefill ?? "") : "");
   const confirmCopy = request.method === "confirm" ? localizedExtensionConfirmCopy(request, t) : null;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    // Native modal top layer makes the background inert (including the composer),
+    // traps focus and restores it on close. Do not use an aria-only overlay.
+    if (!dialog.open) dialog.showModal();
+    const initial =
+      request.method === "confirm" || request.method === "select"
+        ? dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
+        : dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>("input, textarea");
+    initial?.focus();
+    return () => dialog.close();
+  }, [request.id, request.method]);
 
   useEffect(() => {
     setValue(request.method === "editor" ? (request.prefill ?? "") : "");
@@ -1117,32 +1132,42 @@ function ExtensionDialog({
   };
 
   return (
-    <div
+    <dialog
+      ref={dialogRef}
+      className="extension-dialog"
+      aria-modal="true"
+      aria-labelledby="extension-dialog-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        onRespond(request, { cancelled: true });
+      }}
       style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 90,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-        background: "rgba(0,0,0,0.18)",
+        padding: 0,
+        margin: "auto",
+        width: "min(760px, calc(100vw - 40px))",
+        maxHeight: "calc(100dvh - 40px)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        background: "var(--bg)",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
+        overflow: "hidden",
       }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
         style={{
-          width: "min(560px, 100%)",
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          background: "var(--bg)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
+          display: "flex",
+          flexDirection: "column",
+          maxHeight: "calc(100dvh - 42px)",
+          width: "100%",
+          minHeight: 0,
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ color: "var(--text)", fontSize: scaledChatFont(14), fontWeight: 650 }}>
+        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+          <div
+            id="extension-dialog-title"
+            style={{ color: "var(--text)", fontSize: scaledChatFont(14), fontWeight: 650 }}
+          >
             {confirmCopy?.title ?? request.title}
           </div>
           <div
@@ -1157,7 +1182,17 @@ function ExtensionDialog({
           </div>
         </div>
 
-        <div style={{ padding: 14 }}>
+        <div
+          className="extension-dialog-content"
+          tabIndex={0}
+          style={{
+            padding: 14,
+            minHeight: 0,
+            overflow: "auto",
+            overflowWrap: "anywhere",
+            overscrollBehavior: "contain",
+          }}
+        >
           {request.method === "confirm" && (
             <div
               style={{
@@ -1250,9 +1285,11 @@ function ExtensionDialog({
             padding: "10px 14px",
             borderTop: "1px solid var(--border)",
             background: "var(--bg-panel)",
+            flexShrink: 0,
           }}
         >
           <button
+            data-dialog-cancel
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
               padding: "6px 10px",
@@ -1296,7 +1333,7 @@ function ExtensionDialog({
           ) : null}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 

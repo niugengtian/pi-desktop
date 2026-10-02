@@ -2,6 +2,8 @@
 
 ## Status and scope
 
+Follow-up 2026-10-02: see [TIERED-DIALOG-VALIDATION.md](TIERED-DIALOG-VALIDATION.md) for the reproduced offscreen/non-modal approval defect, installed Renderer fix and new durable evidence. This report's `/tmp` directory no longer exists; hashes/results below describe the historical TIER-04 run, not the latest package.
+
 Independent `feat/tiered-context-compare`, following `66d84d2`. Standard **openai-codex-responses** is now handled by the opt-in budget controller, NOT arbitrary Responses/native/custom providers. Production app/configuration/rollback/Web were not changed. No dependencies/models downloaded, no real conversation or auth file copied.
 
 `/Applications/Pi Agent Desktop Tier Compare.app` is an installed **arm64, ad-hoc signed, machine-specific comparison application**, not the production entry or a portable/notarized release. It uses a generated isolation entry, independent appId/HOME/userData/logs/cwd, and an in-process **127.0.0.1** fictional Codex fixture. Its two model names explicitly state that they are NOT real Sol/models. Synthetic SSE usage numbers are not real token measurement/billing.

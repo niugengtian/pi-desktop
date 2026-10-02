@@ -428,6 +428,43 @@ test("incremental Flash SDK transport mock: one reviewed native warm, no selecte
   assert.match(last.summary, /older fact 17/);
 });
 
+test("Codex and reviewed Flash mock compose: incremental warm on A-B-A, opaque hot retained, second delta excludes reasoning", async (t) => {
+  const flash = [];
+  const f = await fixture(t, {
+    api: "openai-codex-responses",
+    codexReasoning: true,
+    oldText: "Fictional older fact 17. ".repeat(400),
+    warmRunner: simulatedFlash(flash),
+  });
+  await f.enable();
+  await f.session.prompt("/tiered-warm-flash");
+  await f.session.prompt("Fictional Codex A after warm");
+  await f.session.setModel(f.runtime.getModel("fictional-b", "b"));
+  await f.session.prompt("Fictional Codex B after warm");
+  await f.session.setModel(f.runtime.getModel("fictional-a", "a"));
+  await f.session.prompt("Fictional Codex A again after warm: " + "x".repeat(7800));
+  assert.equal(flash.length, 2, "Large new span triggers the SDK's second incremental warm");
+  assert.equal(f.captures.length, 3, "Only three main turns, never selected-model summary");
+  for (const { body } of f.captures) {
+    const items = body.input.filter((item) => JSON.stringify(item).includes("Fictional older fact 17"));
+    assert.equal(items.length, 1, "Warm appears once in actual Responses input");
+    assert.ok(!JSON.stringify(body).includes("Fictional older fact 17. ".repeat(2)), "Cold repetition is not restored");
+  }
+  assert.ok(f.captures.at(-1).body.input.some((item) => item.type === "reasoning"));
+  const delta = JSON.parse(flash[1].messages[1].content);
+  assert.ok(delta.records.some((record) => record.omittedReasoning));
+  assert.ok(!flash[1].messages[1].content.includes("opaque-virtual-replay"));
+  assert.ok(!flash[1].messages[1].content.includes("Fictional reasoning summary"));
+  assert.ok(!flash[1].messages[1].content.includes("older fact 17"));
+  const warm = f.manager
+    .getBranch()
+    .filter((entry) => entry.type === "compaction")
+    .at(-1);
+  assert.equal(warm.details.tieredWarm.version, 2);
+  assert.match(warm.summary, /older fact 17/);
+  assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length), f.prefix);
+});
+
 test("Flash source denial, malformed facts or final review denial never promote or invoke native-summary fallback", async (t) => {
   for (const mode of ["source-denied", "bad-facts", "review-denied"]) {
     const flash = [];
