@@ -241,9 +241,11 @@ async function fixture(
     onError: (error) => errors.push(error),
   });
   t.after(() => session.dispose());
-  const enable = async () => {
+  const enable = async ({ native = !warmRunner } = {}) => {
     await session.prompt("/tiered-budget-enable");
     assert.equal(controller.enabled, true, notices.join("\n"));
+    // Native-budget fixtures explicitly opt into native summaries; production defaults to Flash.
+    if (native) await session.prompt("/tiered-warm-native");
   };
   return {
     root,
@@ -400,8 +402,9 @@ test("incremental Flash SDK transport mock: one reviewed native warm, no selecte
   const flash = [];
   const f = await fixture(t, { oldText: "Fictional older fact 17. ".repeat(400), warmRunner: simulatedFlash(flash) });
   await f.enable();
-  await f.session.prompt("/tiered-warm-flash");
-  assert.equal(flash.length, 0);
+  await f.session.prompt("/tiered-budget-status");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmProcessor, "flash-per-attempt-review");
+  assert.equal(flash.length, 0, "Default selection is not source permission");
   await f.session.prompt("Fictional next ordinary request after reviewed warm");
   assert.equal(flash.length, 1);
   assert.equal(f.captures.length, 1, "Only normal main request; no native summary fallback");
@@ -426,6 +429,38 @@ test("incremental Flash SDK transport mock: one reviewed native warm, no selecte
     .at(-1);
   assert.equal(last.details.tieredWarm.version, 2);
   assert.match(last.summary, /older fact 17/);
+});
+
+test("Missing default Flash processor refuses promotion without selected-model summary", async (t) => {
+  const f = await fixture(t, { oldText: "Fictional older fact 17. ".repeat(400) });
+  await f.enable({ native: false });
+  await f.session.prompt("Fictional main input with missing Flash processor");
+  assert.equal(f.captures.length, 1, "Only normal main input with original hot");
+  assert.equal(f.manager.getBranch().filter((e) => e.type === "compaction").length, 0);
+  assert.ok(f.notices.some((text) => text.includes("no native fallback")));
+});
+
+test("Flash default source refusal never falls back, explicit native selection resets on disable", async (t) => {
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(400),
+    warmRunner: simulatedFlash(flash),
+    confirm: async (title) => !title.includes("ONE incremental"),
+  });
+  await f.enable();
+  await f.session.prompt("Fictional current main request with refused default Flash source");
+  assert.equal(flash.length, 0);
+  assert.equal(f.captures.length, 1, "Only ordinary main request; no native summary fallback");
+  assert.equal(f.manager.getBranch().filter((e) => e.type === "compaction").length, 0);
+  await f.session.prompt("/tiered-warm-native");
+  await f.session.prompt("/tiered-budget-status");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmProcessor, "native");
+  await f.session.prompt("/tiered-budget-disable");
+  await f.session.prompt("/tiered-budget-status");
+  const state = JSON.parse(f.notices.at(-1));
+  assert.equal(state.enabled, false);
+  assert.equal(state.warmProcessor, "flash-per-attempt-review");
+  assert.equal(flash.length, 0);
 });
 
 test("Codex and reviewed Flash mock compose: incremental warm on A-B-A, opaque hot retained, second delta excludes reasoning", async (t) => {

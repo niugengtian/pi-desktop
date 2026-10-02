@@ -49,7 +49,7 @@ export class TieredBudgetController {
     fileHash: string;
     firstKeptEntryId: string;
   };
-  private warmMode = false;
+  private warmMode = true;
   private warmCandidate?: { summaryHash: string; detailsHash: string; consentVersion: number };
   private readonly warmRunner?: WarmRunnerFactory;
   private readonly consentVersion: () => number;
@@ -89,7 +89,7 @@ export class TieredBudgetController {
   private disable() {
     this.generation++;
     this.grant = undefined;
-    this.warmMode = false;
+    this.warmMode = true;
     this.warmCandidate = undefined;
     this.compacting = false;
     this.compactSource = undefined;
@@ -356,7 +356,7 @@ export class TieredBudgetController {
                 "No request is sent by enabling. Next ordinary requests retain native system/tools + one native warm summary + full hot messages.",
                 `Text-only conservative ESTIMATE, not exact token counting: hot target ${this.policy.hotTarget}/max ${this.policy.hotMax}; warm target ${this.policy.warmTarget}/max ${this.policy.warmMax}.`,
                 "Byte-BPE JSON envelope/framing may refuse much earlier than a tokenizer; provider framing is not officially calibrated. Images/unmeasured opaque thinking/other APIs are unsupported. Codex replay reserves provider-reported output+reasoning per opaque item, never base64 bytes as tokens; this is an assumption, not a certified tokenizer.",
-                "SDK remains the only compaction owner, on the currently selected model. Native compaction may send the existing source to that normal API; this is not permission to send it to Flash or Web.",
+                "SDK remains the only compaction owner. Default warm processor is DeepSeek Flash with thinking disabled, NOT the main chat model. This budget approval does NOT authorize Flash or Web: each Flash delta requires complete source approval and final candidate review. Missing processor/cancel/failure never falls back to the main model. /tiered-warm-native is an explicit session-only alternative; navigation/restart restores the Flash selection without restoring any permission.",
                 "System/tool schemas and safety reduce history; Completions output is capped at min(model maximum, 2048, quarter window). Codex does not send an output cap: reserve the FULL model catalog maximum (not an enforced cap); opted-in Codex uses SSE with no WebSocket fallback/retries. Current user span/tool chain cannot be silently cut; non-fitting requests stop without HTTP dispatch.",
                 "Failed/cancelled warm generation pauses automatic compaction until explicit manual /compact or re-approval. For this session only: suppress cache warming and automatic retries. No settings-file writes, source deletion, Web/remote fallback or extra handoff prompt.",
                 "Navigation/replacement/restart revokes this experimental policy. Local workspace export has a separate approval.",
@@ -456,7 +456,7 @@ export class TieredBudgetController {
             this.compacting = true;
             this.warmCandidate = undefined;
             if (this.warmMode) {
-              if (!ctx.hasUI || !this.warmRunner) return { cancel: true };
+              if (!ctx.hasUI || !this.warmRunner) throw new Error("Flash source UI/processor unavailable");
               const source = this.compactSource;
               const consentVersion = this.consentVersion();
               const authorized = () => {
