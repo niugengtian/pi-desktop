@@ -15,7 +15,14 @@ import {
   type BudgetPolicy,
   type BudgetReport,
 } from "./tiered-budget.mjs";
-import { tieredHash } from "./tiered-workspace.mjs";
+import { tieredHash, buildTieredSnapshot } from "./tiered-workspace.mjs";
+import {
+  WEB_CONTRACT,
+  isTieredWebModel,
+  buildTieredWebPlan,
+  checkWebDispatch,
+  checkWebReceipt,
+} from "./tiered-web.mjs";
 import { planCodexBudget, nativeBudgetView, checkCodexDispatch } from "./tiered-codex-budget.mjs";
 import { buildWarmPlan, validateWarmAnswer, WARM_INSTRUCTIONS, type WarmRecord } from "./tiered-warm.mjs";
 import { WARM_TARGET, type WarmRunnerFactory } from "./tiered-warm-remote.mjs";
@@ -27,18 +34,21 @@ function refuse(reason: string): never {
   throw new Error(`TIERED_POLICY_REFUSED: ${reason}`);
 }
 const chatOutputLimit = (model: SupportedModel) =>
-  model.api === "openai-codex-responses"
+  model.api === "openai-codex-responses" || isTieredWebModel(model)
     ? model.maxTokens
     : Math.min(model.maxTokens, 2048, Math.max(1, Math.floor(model.contextWindow / 4)));
 
 export const supportsTieredModel = (model: SupportedModel) =>
   (model.api === "openai-completions" && ["openai", "deepseek"].includes(model.provider)) ||
-  (model.api === "openai-codex-responses" && model.provider === "openai-codex");
+  (model.api === "openai-codex-responses" && model.provider === "openai-codex") ||
+  isTieredWebModel(model);
 
 /** Experimental, session-only byte-BPE text policy. Native SDK remains the sole compressor. */
 export class TieredBudgetController {
   private session?: AgentSession;
-  private grant?: { manager: ExtensionContext["sessionManager"]; sessionId: string };
+  private grant?: { manager: ExtensionContext["sessionManager"]; sessionId: string; ui: ExtensionContext["ui"] };
+  private webAbort?: AbortController;
+  lastWebReport?: ReturnType<typeof buildTieredWebPlan>["report"];
   private generation = 0;
   private compacting = false;
   private compactionPaused = false;
@@ -80,6 +90,9 @@ export class TieredBudgetController {
   }
   private supported(model: SupportedModel): boolean {
     const runtime = this.session?.modelRuntime;
+    const custom = runtime?.getRegisteredProviderConfig(model.provider)?.streamSimple;
+    if (isTieredWebModel(model))
+      return Boolean(custom && "tieredWebContract" in custom && custom.tieredWebContract === WEB_CONTRACT);
     return (
       this.supports(model) &&
       !runtime?.getRegisteredProviderConfig(model.provider)?.streamSimple &&
@@ -88,6 +101,7 @@ export class TieredBudgetController {
   }
   private disable() {
     this.generation++;
+    this.webAbort?.abort();
     this.grant = undefined;
     this.warmMode = true;
     this.warmCandidate = undefined;
@@ -227,6 +241,119 @@ export class TieredBudgetController {
       if (grant.sessionId !== session.sessionId || !this.supported(model))
         refuse("unsupported-or-replaced-session-model");
       this.sourceFingerprint();
+      if (isTieredWebModel(model)) {
+        if (this.compacting || options?.sessionId !== session.sessionId) refuse("web-auxiliary-operation");
+        const snapshot = buildTieredSnapshot(session.sessionManager);
+        if (
+          tieredHash(JSON.stringify(context.messages)) !==
+          tieredHash(JSON.stringify(convertToLlm(session.sessionManager.buildSessionProjection().messages)))
+        )
+          refuse("web-context-not-native-projection");
+        const plan = buildTieredWebPlan(snapshot, model, this.policy);
+        this.lastWebReport = plan.report;
+        const initialEntries = structuredClone(session.sessionManager.getEntries());
+        let dispatchId: string | undefined;
+        let observedRemote: unknown;
+        const valid = () => {
+          const fingerprint = this.sourceFingerprint();
+          if (fingerprint !== snapshot.identity.sourceHash) {
+            // The driver's own body-free provisional binding is allowed AFTER dispatch.
+            // No message, cut, foreign metadata or in-place edit can ride this exception.
+            const entries = session.sessionManager.getEntries();
+            const extra = entries.slice(initialEntries.length);
+            const entry = extra[0];
+            if (
+              !dispatchId ||
+              extra.length !== 1 ||
+              entry?.type !== "custom" ||
+              entry.customType !== "page-provider-binding-provisional" ||
+              entry.parentId !== snapshot.identity.leafId ||
+              tieredHash(JSON.stringify(entries.slice(0, initialEntries.length))) !==
+                tieredHash(JSON.stringify(initialEntries))
+            )
+              refuse("web-native-source-changed");
+            const data = entry.data as {
+              sessionId?: string;
+              modelId?: string;
+              remote?: { site?: string; mode?: string };
+            };
+            if (
+              data.sessionId !== session.sessionId ||
+              data.modelId !== model.id ||
+              data.remote?.site !== plan.payload.site ||
+              data.remote.mode !== plan.payload.mode
+            )
+              refuse("web-foreign-binding");
+            observedRemote = data.remote;
+          }
+          if (
+            this.grant !== grant ||
+            this.generation !== generation ||
+            options?.signal?.aborted ||
+            session.model?.id !== model.id ||
+            session.model.provider !== model.provider ||
+            plan.payload.projectionHash !==
+              tieredHash(JSON.stringify(session.sessionManager.buildSessionProjection().messages))
+          )
+            refuse("web-permission-or-source-invalidated");
+        };
+        valid();
+        const approved = await grant.ui.confirm(
+          "Approve this ONE complete Web context?",
+          `Target: ${model.provider}/${model.id}; site ${plan.payload.site}; mode ${plan.payload.mode}.\nFresh remote conversation for this full context; old website conversations are NOT deleted. No retry/fallback. Website window/output/usage are unmeasured; catalog estimates do not enforce a browser output cap.\nNative source ${plan.payload.sourceHash}; warm ${plan.warmVersion ?? "none"}; ${plan.hotSourceEntryIds.length} complete visible hot messages. ${plan.omittedThinking} reasoning blocks/signatures remain local. System/tool declarations, cold and human agents.md remain local. No redaction of visible task/tool evidence; approve only if this whole text may leave for this website. Flash/workspace/budget permissions do NOT approve this dispatch.\nFULL FINAL TEXT (not truncated):\n${plan.payload.text}`,
+        );
+        if (!approved) refuse("web-source-not-approved");
+        valid();
+        const controller = new AbortController();
+        this.webAbort = controller;
+        const signal = controller.signal;
+        // Electron's embedded Node can lack AbortSignal.any; retain fail-closed cancellation there.
+        const inheritAbort = () => controller.abort();
+        options?.signal?.addEventListener("abort", inheritAbort, { once: true });
+        signal.addEventListener("abort", () => options?.signal?.removeEventListener("abort", inheritAbort), {
+          once: true,
+        });
+        if (options?.signal?.aborted) inheritAbort();
+        let payloadChecked = false;
+        let receiptChecked = false;
+        return original(model, context, {
+          ...options,
+          signal,
+          ...{
+            pageProjection: plan.payload,
+            pageBeforeDispatch: (request: unknown) => {
+              valid();
+              if (!payloadChecked || dispatchId || signal.aborted) refuse("web-duplicate-or-unapproved-dispatch");
+              dispatchId = checkWebDispatch(request, plan.payload);
+            },
+            pageOnReceipt: (receipt: unknown, markdown: string) => {
+              valid();
+              if (!dispatchId || receiptChecked || signal.aborted) refuse("web-late-or-duplicate-receipt");
+              checkWebReceipt(receipt, plan.payload, dispatchId, markdown);
+              if (
+                observedRemote &&
+                JSON.stringify(observedRemote) !== JSON.stringify((receipt as { remote: unknown }).remote)
+              )
+                refuse("web-discovered-remote-changed");
+              receiptChecked = true;
+            },
+          },
+          onPayload: async (payload, actualModel) => {
+            if (payloadChecked) refuse("web-duplicate-payload");
+            const transformed = await options?.onPayload?.(payload, actualModel);
+            valid();
+            const finalPayload = JSON.parse(JSON.stringify(transformed ?? payload));
+            if (
+              actualModel.id !== model.id ||
+              actualModel.provider !== model.provider ||
+              JSON.stringify(finalPayload) !== JSON.stringify(plan.payload)
+            )
+              refuse("web-final-payload-mutated");
+            payloadChecked = true;
+            return finalPayload;
+          },
+        });
+      }
       const projectionHash = tieredHash(JSON.stringify(session.sessionManager.buildSessionProjection().messages));
       let approvedCodexPayload: string | undefined;
       let codexDispatched = false;
@@ -331,7 +458,7 @@ export class TieredBudgetController {
             if (!session || !ctx.hasUI || !ctx.isIdle() || !ctx.model || !this.supported(ctx.model)) {
               notify(
                 ctx,
-                "Requires idle/UI approval and supported OpenAI-completions or Codex-Responses text model; no fallback.",
+                "Requires idle/UI approval and supported Completions/Codex or updated tier-contract Web provider; no fallback.",
                 "warning",
               );
               return;
@@ -353,11 +480,11 @@ export class TieredBudgetController {
             const accepted = await ctx.ui.confirm(
               "Enable experimental session budget?",
               [
-                "No request is sent by enabling. Next ordinary requests retain native system/tools + one native warm summary + full hot messages.",
+                "No request is sent by enabling. API requests retain native system/tools + one native warm summary + full hot messages. Updated Web targets separately review/export one warm + all visible hot into a fresh conversation; system/tools/cold/reasoning remain local.",
                 `Text-only conservative ESTIMATE, not exact token counting: hot target ${this.policy.hotTarget}/max ${this.policy.hotMax}; warm target ${this.policy.warmTarget}/max ${this.policy.warmMax}.`,
                 "Byte-BPE JSON envelope/framing may refuse much earlier than a tokenizer; provider framing is not officially calibrated. Images/unmeasured opaque thinking/other APIs are unsupported. Codex replay reserves provider-reported output+reasoning per opaque item, never base64 bytes as tokens; this is an assumption, not a certified tokenizer.",
                 "SDK remains the only compaction owner. Default warm processor is DeepSeek Flash with thinking disabled, NOT the main chat model. This budget approval does NOT authorize Flash or Web: each Flash delta requires complete source approval and final candidate review. Missing processor/cancel/failure never falls back to the main model. /tiered-warm-native is an explicit session-only alternative; navigation/restart restores the Flash selection without restoring any permission.",
-                "System/tool schemas and safety reduce history; Completions output is capped at min(model maximum, 2048, quarter window). Codex does not send an output cap: reserve the FULL model catalog maximum (not an enforced cap); opted-in Codex uses SSE with no WebSocket fallback/retries. Current user span/tool chain cannot be silently cut; non-fitting requests stop without HTTP dispatch.",
+                "System/tool schemas and safety reduce API history; Completions output is capped at min(model maximum, 2048, quarter window). Codex reserves the FULL catalog maximum without an enforced cap, uses SSE and no WebSocket fallback/retries. Web website window/output cap/usage are unmeasured: catalog reservation is only a hint, zero SDK usage is a placeholder. Complete visible Web text must fit estimates and transport bounds; no silent cut or legacy handoff fallback.",
                 "Failed/cancelled warm generation pauses automatic compaction until explicit manual /compact or re-approval. For this session only: suppress cache warming and automatic retries. No settings-file writes, source deletion, Web/remote fallback or extra handoff prompt.",
                 "Navigation/replacement/restart revokes this experimental policy. Local workspace export has a separate approval.",
               ].join("\n"),
@@ -372,7 +499,7 @@ export class TieredBudgetController {
               !ctx.isIdle()
             )
               return;
-            this.grant = { manager, sessionId };
+            this.grant = { manager, sessionId, ui: ctx.ui };
             this.compactionPaused = false;
             notify(ctx, "Experimental native budget coordinator enabled; estimates are not exact tokens.");
           },
@@ -394,6 +521,7 @@ export class TieredBudgetController {
                 compactionPaused: this.compactionPaused,
                 warmProcessor: this.warmMode ? "flash-per-attempt-review" : "native",
                 lastReport: this.lastReport ?? null,
+                lastWebReport: this.lastWebReport ?? null,
               }),
             );
           },
@@ -548,6 +676,7 @@ export class TieredBudgetController {
         });
         pi.on("model_select", () => {
           this.generation++;
+          this.webAbort?.abort();
           if (this.enabled) this.session?.abortCompaction();
         });
         pi.on("session_start", () => this.disable());
