@@ -161,6 +161,15 @@ function bridgeLaunch() {
   const override = String(process.env.PI_PAGE_PROVIDER_BRIDGE ?? "").trim();
   if (override) return { command: override, args: ["--stdio"] };
 
+  // A bridge shipped inside app.asar must run with Electron's ASAR-aware
+  // runtime, even when this computer also has a system Node installation.
+  if (process.versions.electron) {
+    return {
+      command: process.execPath,
+      args: [bundledBridge, "--stdio"],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
   const configuredNode = String(process.env.PI_PAGE_PROVIDER_NODE ?? "").trim();
   if (configuredNode) return { command: configuredNode, args: [bundledBridge, "--stdio"] };
   if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) {
@@ -173,13 +182,6 @@ function bridgeLaunch() {
   ];
   const node = candidates.find((candidate) => existsSync(candidate));
   if (node) return { command: node, args: [bundledBridge, "--stdio"] };
-  if (process.versions.electron) {
-    return {
-      command: process.execPath,
-      args: [bundledBridge, "--stdio"],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    };
-  }
   return { command: "node", args: [bundledBridge, "--stdio"] };
 }
 
