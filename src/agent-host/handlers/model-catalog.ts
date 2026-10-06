@@ -1,10 +1,5 @@
 import { statSync } from "node:fs";
-import {
-  createAgentSessionServices,
-  getAgentDir,
-  type ModelRuntime,
-  type SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ApiHandler } from "../../contract/rpc";
 import {
@@ -16,6 +11,7 @@ import {
   type ModelsListResult,
 } from "../../contract/types";
 import { modelCatalogRefreshCoordinator } from "../model-runtime";
+import { createDesktopAgentServices as createAgentSessionServices } from "../builtin-web-provider";
 
 const THINKING_SUFFIXES = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 

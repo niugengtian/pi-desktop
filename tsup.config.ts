@@ -41,6 +41,8 @@ export default defineConfig([
       "agent-host": "src/agent-host/index.ts",
       "plugin-worker": "src/agent-host/plugin-worker.ts",
       "managed-process-worker": "src/agent-host/managed-process/worker.ts",
+      "builtin-page-provider": "plugins/page-provider/extensions/page-provider.ts",
+      "page-provider-bridge": "plugins/page-provider/bridge/opencli-bridge.mjs",
     },
     format: ["esm"],
     platform: "node",

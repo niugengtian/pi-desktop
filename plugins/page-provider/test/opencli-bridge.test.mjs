@@ -13,7 +13,27 @@ async function fakeOpenCli(executionSource) {
   await mkdir(join(root, "dist", "src"), { recursive: true });
   await mkdir(join(root, "clis", "deepseek"), { recursive: true });
   await mkdir(join(root, "clis", "chatgpt"), { recursive: true });
-  await writeFile(join(root, "package.json"), JSON.stringify({ name: "@jackwener/opencli", type: "module" }));
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "@jackwener/opencli",
+      type: "module",
+      exports: {
+        "./registry": "./dist/src/registry-api.js",
+        "./errors": "./dist/src/errors.js",
+        "./utils": "./dist/src/utils.js",
+      },
+    }),
+  );
+  await writeFile(
+    join(root, "dist", "src", "registry-api.js"),
+    "export const cli = c => c; export const Strategy = {COOKIE:'cookie'};",
+  );
+  await writeFile(
+    join(root, "dist", "src", "errors.js"),
+    "export class CliError extends Error {} export class ArgumentError extends CliError {} export class CommandExecutionError extends CliError {} export class TimeoutError extends CliError {} export class AuthRequiredError extends CliError {} export const EXIT_CODES={};",
+  );
+  await writeFile(join(root, "dist", "src", "utils.js"), "export const htmlToMarkdown=s=>s;");
   await writeFile(join(root, "dist", "src", "execution.js"), executionSource, "utf8");
   await writeFile(
     join(root, "clis", "deepseek", "ask.js"),
@@ -95,7 +115,7 @@ function runBridge({ root, request, env = {} }) {
   });
 }
 
-test("OpenCLI bridge executes the external adapter in memory and normalizes Markdown", async () => {
+test("OpenCLI bridge executes the built-in adapter with the external runtime and normalizes Markdown", async () => {
   const root = await fakeOpenCli(`
 export async function executeCommand(command, kwargs, debug, options) {
   if (process.argv.includes(kwargs.prompt)) throw new Error("prompt leaked into argv");
@@ -253,10 +273,12 @@ export async function executeCommand(command, kwargs) {
   assert.equal(result.events.at(-1).message.markdown, "image:0102,0304");
 });
 
-test("OpenCLI bridge prefers a private user adapter override", async () => {
+test("OpenCLI bridge uses its built-in adapter even with a stale user override", async () => {
   const root = await fakeOpenCli(`
 export async function executeCommand(command, kwargs) {
-  return [{ response: command.source + ":" + kwargs.prompt }];
+  if (command.source === 'private') throw new Error('stale override loaded');
+  if (command.pageProviderDispatchContract !== 'pi-tiered-web-1') throw new Error('missing built-in contract');
+  return [{ response: "builtin:" + kwargs.prompt }];
 }
 `);
   const home = join(root, "override-home");
@@ -274,7 +296,7 @@ export async function executeCommand(command, kwargs) {
   });
 
   assert.equal(result.code, 0);
-  assert.equal(result.events.at(-1).message.markdown, "private:hello");
+  assert.equal(result.events.at(-1).message.markdown, "builtin:hello");
 });
 
 test("OpenCLI bridge routes new and bound turns explicitly", async () => {

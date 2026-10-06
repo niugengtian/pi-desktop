@@ -1,5 +1,6 @@
 import { ModelSessions } from "./memory/model-sessions.mjs";
-import { createAgentSessionServices, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createDesktopAgentServices } from "./builtin-web-provider";
 import { appendFileSync } from "node:fs";
 import { createDesktopPromptExtension, type SessionPromptPolicy } from "./session-prompt-policy";
 import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
@@ -61,7 +62,7 @@ export async function createDesktopSessionServices(
     createTieredWorkspaceExtension(),
     tieredBudget.extension(),
   ];
-  const nativeServices = await createAgentSessionServices({
+  const nativeServices = await createDesktopAgentServices({
     cwd,
     agentDir,
     resourceLoaderOptions: { extensionFactories },

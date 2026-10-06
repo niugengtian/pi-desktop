@@ -39,7 +39,27 @@ async function fixture(
   const capture = join(root, "captures.jsonl");
   mkdirSync(join(root, "dist/src"), { recursive: true });
   mkdirSync(join(root, "project"));
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@jackwener/opencli", type: "module" }));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "@jackwener/opencli",
+      type: "module",
+      exports: {
+        "./registry": "./dist/src/registry-api.js",
+        "./errors": "./dist/src/errors.js",
+        "./utils": "./dist/src/utils.js",
+      },
+    }),
+  );
+  writeFileSync(
+    join(root, "dist/src/registry-api.js"),
+    "export const cli = c => c; export const Strategy = {COOKIE:'cookie'};",
+  );
+  writeFileSync(
+    join(root, "dist/src/errors.js"),
+    "export class CliError extends Error {} export class ArgumentError extends CliError {} export class CommandExecutionError extends CliError {} export class TimeoutError extends CliError {} export class AuthRequiredError extends CliError {} export const EXIT_CODES={};",
+  );
+  writeFileSync(join(root, "dist/src/utils.js"), "export const htmlToMarkdown=s=>s;");
   for (const site of ["chatgpt", "deepseek"]) {
     mkdirSync(join(root, "clis", site), { recursive: true });
     writeFileSync(

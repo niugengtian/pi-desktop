@@ -39,6 +39,17 @@ export function verifyModelDependencies(readManifest) {
 
 export function verifyModelArchive(archive) {
   const files = new Set(listPackage(archive).map((entry) => entry.replace(/^\//, "")));
+  for (const file of [
+    "out/main/builtin-page-provider.mjs",
+    "out/main/page-provider-bridge.mjs",
+    "out/main/web-adapters/chatgpt/ask.js",
+    "out/main/web-adapters/chatgpt/utils.js",
+    "out/main/web-adapters/deepseek/ask.js",
+    "out/main/web-adapters/deepseek/utils.js",
+    "out/main/web-adapters/LICENSE",
+  ]) {
+    if (!files.has(file)) throw new Error(`Packaged built-in Web capability missing: ${file}`);
+  }
   return verifyModelDependencies((directory) => {
     const filename = `${directory}/package.json`;
     return files.has(filename) ? JSON.parse(extractFile(archive, filename).toString()) : undefined;

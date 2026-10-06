@@ -26,12 +26,26 @@ import { pathToFileURL } from "node:url";
 const port = new EventEmitter();
 process.parentPort = port;
 let ready = false;
+const renderer = new EventEmitter();
+renderer.start = () => {};
+renderer.postMessage = message => {
+  if (message.kind !== "response" || message.id !== "first-install-models") return;
+  if (!message.ok) throw new Error("Packaged model list failed: " + JSON.stringify(message.error));
+  const ids = message.result.models.filter(model => model.provider === "opencli-page").map(model => model.id).sort();
+  if (JSON.stringify(ids) !== JSON.stringify(["chatgpt-web", "deepseek-chat", "deepseek-reasoner"]))
+    throw new Error("Built-in Web models missing on first install: " + JSON.stringify(ids));
+  console.log("PACKAGED_FIRST_INSTALL_WEB_MODELS " + ids.join(","));
+  setImmediate(() => port.emit("message", {data: {type: "shutdown"}}));
+};
 port.postMessage = message => {
   if (message.type !== "ready") return;
   if (message.piVersion !== ${JSON.stringify(expected)}) throw new Error("Packaged SDK version mismatch");
   ready = true;
   console.log("PACKAGED_HOST_READY " + message.piVersion);
-  setImmediate(() => port.emit("message", {data: {type: "shutdown"}}));
+  setImmediate(() => {
+    port.emit("message", {data: {type: "attach-port"}, ports:[renderer]});
+    renderer.emit("message", {data: {kind:"request", id:"first-install-models", method:"models.list", params:{cwd:${JSON.stringify(directory)}}}});
+  });
 };
 await import(pathToFileURL(${JSON.stringify(host)}).href);
 if (!ready) throw new Error("Packaged Host did not finish initialization");
@@ -56,6 +70,8 @@ if (!ready) throw new Error("Packaged Host did not finish initialization");
   process.stderr.write(result.stderr ?? "");
   assertSuccessfulSpawn(result, "Packaged Host initialization/shutdown");
   if (!result.stdout.includes(`PACKAGED_HOST_READY ${expected}`)) throw new Error("Missing Host readiness receipt");
+  if (!result.stdout.includes("PACKAGED_FIRST_INSTALL_WEB_MODELS"))
+    throw new Error("Missing first-install Web model receipt");
   console.log("PASS: packaged Host initialized and shut down with isolated stores (Node-mode driver, not GUI).");
 } finally {
   rmSync(directory, { recursive: true, force: true });

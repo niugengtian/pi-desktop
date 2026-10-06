@@ -1,22 +1,20 @@
-# Page Provider prototype
+# Built-in Web models (Page Provider)
 
-This Pi Package registers an **OpenCLI Page** provider in PI Desktop. It
-deliberately contains no website selectors and does not bundle OpenCLI. A small
-external executable owns the browser integration and communicates with the
-extension over newline-delimited JSON on stdin/stdout.
+Pi Agent Desktop 0.3.2 includes this capability and its repaired ChatGPT / DeepSeek
+site adapters. OpenCLIApp remains the external browser runtime. Desktop starts
+its own thin bridge and communicates over newline-delimited JSON on stdin/stdout.
 
-## Install in current PI Desktop
+## Use in current Pi Agent Desktop
 
-1. Open **Settings → Plugins → Add Plugin**.
-2. Enter this package directory as the source (not the `.piplug` file):
-   `/Users/niugengtian/work/奇思妙想/pi-desktop-page-provider/examples/plugins/page-provider`.
-3. Choose the global or project scope and click **Install**.
-4. Install OpenCLI and keep OpenCLIApp running. Sign in to DeepSeek and/or
+1. Install Pi Agent Desktop and OpenCLIApp. No separate plugin or repair package
+   installation is required. Existing user-installed copies are superseded by
+   the built-in implementation without deleting their files or settings.
+2. Keep OpenCLIApp running, complete its browser connection, and sign in to DeepSeek and/or
    ChatGPT in the browser connected to OpenCLI.
-5. Reload the session, then select **OpenCLI Page / DeepSeek Chat**,
+3. Select **OpenCLI Page / DeepSeek Chat**,
    **DeepSeek Reasoner**, or **ChatGPT Web**.
-6. Use `/page-provider-status` to verify the browser connection.
-7. After a completed web turn, use `/page-provider-binding` to inspect the
+4. Use `/page-provider-status` to verify the browser connection.
+5. After a completed web turn, use `/page-provider-binding` to inspect the
    verified remote conversation bound to the selected model, or
    `/page-provider-open` to restore that exact conversation in OpenCLI's browser.
    Use `/page-provider-conversation` to choose interactively between continuing
@@ -24,7 +22,7 @@ extension over newline-delimited JSON on stdin/stdout.
    are `/page-provider-conversation continue` and
    `/page-provider-conversation new`; `/page-provider-new` remains the force-new
    shortcut.
-8. Use `/page-provider-task-status` to inspect the stable task ID, latest
+6. Use `/page-provider-task-status` to inspect the stable task ID, latest
    checkpoint, and the selected model's synchronization cursor. An unacknowledged
    handoff is blocked from automatic resend; `/page-provider-handoff-retry`
    explicitly permits one retry. If PI timed out after a site already completed
@@ -36,11 +34,13 @@ The package manifest is `package.json`; its `pi.extensions` entry loads
 remain for the older trusted-extension prototype and are not the installation
 format used by the current PI Desktop package screen.
 
-The prototype accepts text and up to eight PNG, JPEG, WebP, or GIF images per
-turn on DeepSeek and ChatGPT Web. Each image is limited to 15 MiB and the turn
-total to 40 MiB. Its bundled
-thin bridge locates the external OpenCLI installation and executes that
-installation's `ask` adapter in memory. Inline image data is materialized
+The provider accepts text and up to eight PNG, JPEG, WebP, or GIF images per
+batch on DeepSeek and ChatGPT Web. Each image is limited to 10 MiB and a batch
+total to 80 MiB; more images are sent in consecutive rounds before the final
+request. Its bundled thin bridge locates the external OpenCLI installation and
+executes Desktop's built-in repaired `ask` adapter through that runtime's public
+exports. It does not depend on or overwrite `~/.opencli/clis` overrides.
+Inline image data is materialized
 without modification in a private temporary directory only for the adapter
 call and removed afterward.
 OpenCLI owns page selection, authentication, input, response extraction, and
@@ -56,8 +56,9 @@ cancellation or timeout does not lose the new conversation. It never duplicates
 the prompt or reply body. Each successful Page Provider turn also appends a bounded checkpoint with
 transcript references, hashes, and short summaries. When a target web model is
 behind, the next request carries only checkpoints after that model's cursor and
-requires a structured acknowledgement before advancing it. No OpenCLI source or
-dependency is bundled into the plugin.
+requires a structured acknowledgement before advancing it. The two repaired site
+adapters and their license are shipped; the OpenCLI browser runtime and its
+dependencies remain external.
 
 ## Bridge contract
 

@@ -16,8 +16,10 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { WEB_CONTRACT, hashText } from "../src/tiered-contract.mjs";
+import { prepareBuiltinAdapter } from "./builtin-adapters.mjs";
 let frames;
 let rawRequest;
+let cleanupAdapter = async () => {};
 
 const MAX_REQUEST_BYTES = 120 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -390,6 +392,10 @@ async function main() {
   if (candidateRoot && request.deliveryContract === WEB_CONTRACT) {
     // Explicit candidate path; missing/incompatible files must NOT fall back to installed code.
     adapterPath = join(resolve(candidateRoot), site, `${adapterName}.js`);
+  } else if (adapterName === "ask" && ["chatgpt", "deepseek"].includes(site)) {
+    const builtin = await prepareBuiltinAdapter(root, site);
+    adapterPath = builtin.adapterPath;
+    cleanupAdapter = builtin.cleanup;
   } else {
     try {
       await access(userAdapterPath, fsConstants.R_OK);
@@ -543,7 +549,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  const normalized = publicError(error);
-  fail(normalized.code, normalized.message, normalized.recoverable);
-});
+main()
+  .catch((error) => {
+    const normalized = publicError(error);
+    fail(normalized.code, normalized.message, normalized.recoverable);
+  })
+  .finally(() => cleanupAdapter());

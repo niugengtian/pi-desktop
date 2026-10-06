@@ -44,7 +44,10 @@ type TieredOptions = SimpleStreamOptions & {
   pageOnReceipt?: (receipt: unknown, markdown: string) => void;
 };
 
-const bundledBridge = fileURLToPath(new URL("../bridge/opencli-bridge.mjs", import.meta.url));
+const sourceBridge = fileURLToPath(new URL("../bridge/opencli-bridge.mjs", import.meta.url));
+const bundledBridge = existsSync(sourceBridge)
+  ? sourceBridge
+  : fileURLToPath(new URL("./page-provider-bridge.mjs", import.meta.url));
 
 const BINDING_ENTRY_TYPE = "page-provider-binding";
 const PROVISIONAL_BINDING_ENTRY_TYPE = "page-provider-binding-provisional";
