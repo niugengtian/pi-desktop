@@ -1324,13 +1324,30 @@ export async function getVisibleMessages(page, { textOnly = false } = {}) {
             const textClone = cleanClone;
             const rawText = textClone instanceof HTMLElement ? (textClone.textContent || '') : '';
             const text = normalize(rawText);
+            let promptText;
+            if (role === 'User' && cleanClone instanceof HTMLElement) {
+                // The current shell renders inline Markdown even in user turns.
+                // Keep displayed text readable, but restore code delimiters for
+                // request matching. Never strip delimiters from the approved
+                // input: that would alias punctuation-distinct requests.
+                const promptClone = cleanClone.cloneNode(true);
+                for (const code of promptClone.querySelectorAll('code')) {
+                    if (code.closest('pre')) continue;
+                    const value = code.textContent || '';
+                    const runs = value.match(/\`+/g) || [];
+                    const fence = '\`'.repeat(Math.max(0, ...runs.map(run => run.length)) + 1);
+                    code.replaceWith(document.createTextNode(fence + value + fence));
+                }
+                const reconstructed = normalize(promptClone.textContent || '');
+                if (reconstructed !== text) promptText = reconstructed;
+            }
             if (!text) continue;
             if (role === 'Assistant' && /^(?:Pro\\s*)?(?:思考中|正在思考)$/i.test(text)) continue;
             // Article and nested role selectors can identify the same content node.
             // Identical text in separate turns is still a distinct reply.
             if (seen.has(contentNode)) continue;
             seen.add(contentNode);
-            rows.push({ role, text, html });
+            rows.push({ role, text, html, ...(promptText === undefined ? {} : { promptText }) });
         }
         return rows;
     })()`)), 'chatgpt visible messages');
@@ -1339,6 +1356,7 @@ export async function getVisibleMessages(page, { textOnly = false } = {}) {
         Role: item?.role === 'Assistant' ? 'Assistant' : 'User',
         Text: String(item?.text || '').trim(),
         Html: String(item?.html || ''),
+        ...(item?.promptText === undefined ? {} : { PromptText: String(item.promptText) }),
     })).filter((item) => item.Text);
 }
 
@@ -2263,9 +2281,17 @@ function chatGPTUserPromptMatches(visibleText, prompt) {
         ));
 }
 
+function followingAssistant(messages, userIndex) {
+    for (let index = userIndex + 1; index < messages.length; index += 1) {
+        if (messages[index]?.Role === 'User') return undefined;
+        if (messages[index]?.Role === 'Assistant') return messages[index];
+    }
+    return undefined;
+}
+
 function responsePairKey(user, assistant) {
     return JSON.stringify([
-        cleanPromptText(user?.Text),
+        cleanPromptText(user?.PromptText ?? user?.Text),
         String(assistant?.Text || '').trim(),
     ]);
 }
@@ -2276,8 +2302,8 @@ export function getChatGPTResponsePairKeys(messages, prompt) {
     const keys = [];
     for (let index = 0; index < messages.length; index += 1) {
         const user = messages[index];
-        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.Text, promptKey)) continue;
-        const assistant = messages.slice(index + 1).find((message) => message?.Role === 'Assistant');
+        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.PromptText ?? user.Text, promptKey)) continue;
+        const assistant = followingAssistant(messages, index);
         if (!assistant || !String(assistant.Text || '').trim()) continue;
         keys.push(responsePairKey(user, assistant));
     }
@@ -2289,8 +2315,8 @@ export function findExistingChatGPTResponse(messages, prompt) {
     if (!promptKey) return '';
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const user = messages[index];
-        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.Text, promptKey)) continue;
-        const assistant = messages.slice(index + 1).find((message) => message?.Role === 'Assistant');
+        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.PromptText ?? user.Text, promptKey)) continue;
+        const assistant = followingAssistant(messages, index);
         if (!assistant) continue;
         return assistant.Html
             ? (messageHtmlToMarkdown(assistant.Html) || String(assistant.Text || '').trim())
@@ -2318,14 +2344,9 @@ function findLatestNewAssistantMessage(messages, prompt, baselinePairCounts) {
     const currentPairCounts = getChatGPTResponsePairCounts(messages, prompt);
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const user = messages[index];
-        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.Text, promptKey)) continue;
-        const assistantIndex = messages.findIndex((message, candidateIndex) => (
-            candidateIndex > index
-            && message?.Role === 'Assistant'
-            && String(message.Text || '').trim()
-        ));
-        if (assistantIndex < 0) continue;
-        const assistant = messages[assistantIndex];
+        if (user?.Role !== 'User' || !chatGPTUserPromptMatches(user.PromptText ?? user.Text, promptKey)) continue;
+        const assistant = followingAssistant(messages, index);
+        if (!assistant || !String(assistant.Text || '').trim()) continue;
         const key = responsePairKey(user, assistant);
         if ((currentPairCounts.get(key) || 0) <= (baselinePairCounts.get(key) || 0)) continue;
         return assistant;

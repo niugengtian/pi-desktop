@@ -341,3 +341,26 @@ test(
     assert.ok(saved.records.every((record) => record.delivered.length === 0));
   },
 );
+
+test(
+  "unconfirmed Web reply retains the public cause and never automatically resends",
+  { skip: !packagePath },
+  async (t) => {
+    const f = await fixture(t, { unconfirmed: true, fresh: true });
+    await f.session.prompt("Fictional diagnostic request");
+    assert.equal(f.readCaptures().length, 1);
+    const message = f.session.messages.at(-1);
+    assert.equal(message.stopReason, "stop");
+    const text = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    assert.match(text, /PAGE_PROVIDER_TURN_UNCONFIRMED/);
+    assert.match(text, /PAGE_PROVIDER_EXTRACTION_FAILED/);
+    assert.equal(
+      f.manager.getBranch().filter((e) => e.type === "custom" && e.customType === "page-provider-tiered-delivery")
+        .length,
+      0,
+    );
+  },
+);

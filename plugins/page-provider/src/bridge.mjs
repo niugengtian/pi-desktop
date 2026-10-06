@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { WEB_CONTRACT } from "./tiered-contract.mjs";
 import { spawn as nodeSpawn } from "node:child_process";
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_LINE_BYTES = 120 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_TOTAL_BYTES = 80 * 1024 * 1024;

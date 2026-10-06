@@ -1,4 +1,4 @@
 a8cd217991182933a22a24bac3468a32cf32f3b095522c1532ff8a923b8dc7d9  clis/chatgpt/ask.js
-0450a2eb7c8135a21ef5f824220464c2f9144ccd37a78414b9be8790679c6e37  clis/chatgpt/utils.js
+08b0f9401c1f1f598147b5dbecf18409c820f3f1c6f2e2e8e7ce5a3d4ee0b0f7  clis/chatgpt/utils.js
 0bf42394d682b0fa7b6bbeaf22c4870ba847d7116e73325c247e0cf594313b2f  clis/deepseek/ask.js
 39cfaa4b6643ec67a8af044fc968d9b8326def4ed2b2fc3f63c25e98acd62428  clis/deepseek/utils.js

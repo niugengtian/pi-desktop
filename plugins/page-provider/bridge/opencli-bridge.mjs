@@ -369,7 +369,7 @@ async function main() {
 
   const request = await readRequest();
   const site = request.site;
-  const timeout = Number.parseInt(String(process.env.PI_PAGE_PROVIDER_TIMEOUT ?? "120"), 10);
+  const timeout = Number.parseInt(String(process.env.PI_PAGE_PROVIDER_TIMEOUT ?? "600"), 10);
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 3600) {
     throw new Error("PI_PAGE_PROVIDER_TIMEOUT must be an integer from 1 to 3600 seconds.");
   }

@@ -343,7 +343,11 @@ function streamPageProvider(
         // warning prevents the generic provider retry loop from re-sending a
         // side-effecting request. The hidden marker keeps a later user-initiated
         // retry idempotent through shouldDedupeRetry().
-        const warning = `<!-- ${UNCONFIRMED_TURN_MARKER} -->\n> **Web turn status is unconfirmed; automatic retry was stopped.**\n>\n> The website may already have received this request. Check the web page and \`/page-provider-binding\` before retrying explicitly.`;
+        const cause = error instanceof Error ? error.message : String(error);
+        // Preserve the bridge's public diagnostic without exposing prompt text
+        // or turning Markdown supplied by an error into active UI content.
+        const diagnostic = cause.replace(/[\r\n`<>]/g, " ").slice(0, 600);
+        const warning = `<!-- ${UNCONFIRMED_TURN_MARKER} -->\n> **网页回复尚未确认，已停止自动重发。**\n>\n> 原因：${diagnostic}\n>\n> 请求可能已到达网站。请先查看原网页和 \`/page-provider-binding\`，避免重复发送。`;
         const contentIndex = output.content.length;
         output.content.push({ type: "text", text: "" });
         stream.push({ type: "text_start", contentIndex, partial: output });
