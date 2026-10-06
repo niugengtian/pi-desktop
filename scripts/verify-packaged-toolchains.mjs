@@ -11,6 +11,7 @@ import { extractFile, listPackage } from "@electron/asar";
 import { verifyWindowsHelperPe } from "./windows-helper-pe.mjs";
 import { validatePiPackageGraph } from "./pi-runtime-contract.mjs";
 import { assertSuccessfulSpawn } from "./process-utils.mjs";
+import { verifyPackagedPtyHelpers } from "./packaged-pty-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expectedPiVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).dependencies?.[
@@ -44,11 +45,24 @@ const layout = findPackagedLayout(dist, target);
 verifyPackagedResources(layout.resources, target);
 verifyWindowsManagedProcessHelper(layout.resources, target, !staticOnly, requireReleaseHelper);
 verifyPiRuntimeAssets(layout.resources, expectedPlatform, expectedArch);
+verifyPackagedPtyHelpers(layout.resources, expectedPlatform, expectedArch);
 verifyBundledTools(layout.resources, expectedPlatform, expectedArch, !staticOnly);
 verifyBundledHerdr(layout.resources, expectedPlatform, expectedArch, !staticOnly);
 verifyLinuxSandbox(layout.executable, expectedPlatform);
 if (!staticOnly) {
   runPackagedStartup(layout.executable, target);
+  if (expectedPlatform === "darwin") {
+    const terminal = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "scripts/test-packaged-terminal.mjs"),
+        path.dirname(path.dirname(path.dirname(layout.executable))),
+      ],
+      { encoding: "utf8", timeout: 40_000 },
+    );
+    assertSuccessfulSpawn(terminal, "Packaged PTY integration");
+    if (!terminal.stdout.includes("PACKAGED_PTY_SPAWN_OK")) throw new Error("Packaged PTY did not run");
+  }
   if (target === "win32-x64") runPackagedCleanupFaultValidation(layout.executable);
   if (layout.appImage) {
     verifyLinuxAppImageDesktopEntry(layout.appImage);

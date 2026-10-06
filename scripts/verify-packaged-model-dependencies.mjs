@@ -1,7 +1,9 @@
 import { verifyAsarIntegrity } from "./verify-asar-integrity.mjs";
 import path from "node:path";
+import { repairPackagedPtyHelpers, verifyPackagedPtyHelpers } from "./packaged-pty-helpers.mjs";
 import { extractFile, listPackage } from "@electron/asar";
 import semver from "semver";
+import { Arch } from "builder-util";
 
 // Resolve inside the archive, not against the development machine's node_modules.
 export function verifyModelDependencies(readManifest) {
@@ -62,6 +64,8 @@ export default async function verifyPackagedModels(context) {
     context.electronPlatformName === "darwin"
       ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents", "Resources")
       : path.join(context.appOutDir, "resources");
+  repairPackagedPtyHelpers(resources, context.electronPlatformName, Arch[context.arch]);
+  verifyPackagedPtyHelpers(resources, context.electronPlatformName, Arch[context.arch]);
   const archive = path.join(resources, "app.asar");
   const files = verifyAsarIntegrity(archive);
   console.log(`[package] verified physical integrity of ${files} files`);
