@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { readWarmRecord } from "./tiered-warm.mjs";
+import { readWarmRecord, SUMMARY_WARM_SCHEMA } from "./tiered-warm.mjs";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 // Prototype bounds: stop explicitly instead of unbounded O(n²) cold-export archives.
@@ -43,20 +43,25 @@ function segment(value) {
   }
   return value;
 }
-function regular(path) {
+function regular(path, privateOnly = true) {
   const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_BYTES) {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (privateOnly && stat.size > MAX_BYTES)) {
     throw new Error("Unsafe or oversized workspace file");
   }
   return stat;
 }
 function readSafe(path, privateOnly = true) {
-  const before = regular(path);
+  const before = regular(path, privateOnly);
   if (privateOnly && (before.mode & 0o077) !== 0) throw new Error("Workspace file permissions changed");
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES || (privateOnly && (stat.mode & 0o077) !== 0))
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      (privateOnly && stat.size > MAX_BYTES) ||
+      (privateOnly && (stat.mode & 0o077) !== 0)
+    )
       throw new Error("Unsafe file");
     return readFileSync(fd);
   } finally {
@@ -81,6 +86,23 @@ function writeNew(path, bytes) {
 }
 
 /** Read-only SDK projection: no independent truncation, summary insertion, or token claims. */
+export function pendingNativeSource(manager) {
+  const path = manager.getSessionFile();
+  const header = manager.getHeader();
+  const entries = manager.getEntries();
+  if (
+    !path ||
+    existsSync(path) ||
+    !header ||
+    header.id !== manager.getSessionId() ||
+    entries.some((entry) => entry.type === "message" && entry.message.role === "assistant")
+  )
+    return undefined;
+  // Pi deliberately waits for the first assistant before flushing a new JSONL.
+  // Use its exact pending records for identity checks without changing persistence.
+  return Buffer.from([header, ...entries].map((entry) => JSON.stringify(entry) + "\n").join(""));
+}
+
 export function buildTieredSnapshot(manager) {
   const header = structuredClone(manager.getHeader());
   const entries = structuredClone(manager.getEntries());
@@ -90,8 +112,8 @@ export function buildTieredSnapshot(manager) {
   const leafId = manager.getLeafId();
   if (!header || header.id !== sessionId) throw new Error("Session identity changed");
   const sourcePath = manager.getSessionFile();
-  if (!sourcePath || !existsSync(sourcePath)) throw new Error("Native history is not yet flushed; nothing exported");
-  const raw = readSafe(sourcePath, false);
+  if (!sourcePath) throw new Error("Native history has no source path; nothing exported");
+  const raw = pendingNativeSource(manager) ?? readSafe(sourcePath, false);
   let rawEntries;
   try {
     rawEntries = raw
@@ -155,7 +177,12 @@ export function buildTieredSnapshot(manager) {
     sourceHash: tieredHash(jsonl(covered)),
     semanticCompleteness: "not-proven",
     // This is an opaque SDK summary, NOT a fabricated structured fact database.
-    factsStatus: warmRecord ? "human-reviewed-extractive-not-lossless" : "not-extracted",
+    factsStatus:
+      warmRecord?.schema === SUMMARY_WARM_SCHEMA
+        ? "human-reviewed-summary-not-lossless"
+        : warmRecord
+          ? "human-reviewed-extractive-not-lossless"
+          : "not-extracted",
     processor: warmRecord ? "flash-off-incremental" : "sdk-native",
     factVersion: warmRecord?.version ?? null,
   };

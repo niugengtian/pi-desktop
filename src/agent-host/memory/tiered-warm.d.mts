@@ -5,6 +5,10 @@ import type {
   CompactionEntry,
 } from "@earendil-works/pi-coding-agent";
 export const WARM_SCHEMA: string;
+export const LONG_WARM_SCHEMA: string;
+export const SUMMARY_WARM_SCHEMA: string;
+export const SUMMARY_WARM_INSTRUCTIONS: string;
+export const LONG_WARM_INSTRUCTIONS: string;
 export const WARM_INSTRUCTIONS: string;
 export interface WarmFact {
   sourceId: string;
@@ -25,14 +29,22 @@ export interface WarmRecord {
   summaryHash: string;
   review: string;
   semanticCompleteness: string;
+  notes?: Array<{ sourceHash: string; summary: string }>;
+  sourcePath?: string;
+  archive?: { sourcePath: string; omittedSourceIds: string[] };
 }
 export interface WarmPlan {
   schema: string;
+  instructions: string;
+  sourcePath: string;
   sessionId: string;
   firstKeptEntryId: string;
   tokensBefore: number;
   sourceHash: string;
   payload: string;
+  maxSummaryChars?: number;
+  previousSummary?: string;
+  segment?: { index: number; count: number; deltaHash: string };
   records: Array<{
     sourceId: string;
     entryId: string;
@@ -40,6 +52,7 @@ export interface WarmPlan {
     role: string;
     toolError: boolean | null;
     text: string;
+    closedTools?: boolean;
   }>;
   readFiles: string[];
   modifiedFiles: string[];
@@ -54,3 +67,15 @@ export function buildWarmPlan(
   preparation: SessionBeforeCompactEvent["preparation"],
 ): WarmPlan;
 export function validateWarmAnswer(plan: WarmPlan, answer: string): CompactionResult;
+
+export const WARM_SEGMENT_BYTES: number;
+export function splitWarmPlan(plan: WarmPlan): WarmPlan[];
+export function mergeWarmAnswers(plan: WarmPlan, segments: WarmPlan[], answers: string[]): CompactionResult;
+
+export function buildWarmConsolidation(plan: WarmPlan, candidate: CompactionResult): WarmPlan;
+export function applyWarmConsolidation(
+  plan: WarmPlan,
+  candidate: CompactionResult,
+  consolidation: WarmPlan,
+  answer: string,
+): CompactionResult;

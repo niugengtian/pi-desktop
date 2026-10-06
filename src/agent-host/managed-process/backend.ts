@@ -7,6 +7,7 @@ import type {
 } from "../../contract/processes.ts";
 import type { CommandDescriptor, ToolExecutionContext } from "../../shared/toolchains/types.ts";
 import type { ManagedProcessOwnerRuntimeIdentity } from "./owner-identity.ts";
+import type { ProcessAdmissionWait } from "./admission.ts";
 
 export type ManagedProcessBackendEvent =
   | { type: "stdout" | "stderr"; bytes: Buffer }
@@ -15,6 +16,14 @@ export type ManagedProcessBackendEvent =
   | { type: "stopping"; phase: "interrupt" | "terminate" | "force" }
   | { type: "exit"; exit: Omit<ManagedProcessExit, "finishedAt"> }
   | { type: "error"; subcode: string; message?: string };
+
+/** Host-only native Bash hooks; never accepted from Renderer/model parameters. */
+export interface ManagedProcessExecution {
+  context: ToolExecutionContext;
+  onEvent(event: ManagedProcessBackendEvent): void;
+  onAdmission?: (wait: ProcessAdmissionWait | null) => void;
+  onCommitted?: () => void;
+}
 
 export interface PreparedManagedProcessLaunch {
   processId: string;

@@ -1,3 +1,7 @@
+import { ManagedProcessError, deferred, timeout } from "./lifecycle-utils.ts";
+import { ManagedProcessAdmission } from "./admission.ts";
+import type { ManagedRecord, Waiter } from "./record.ts";
+export { ManagedProcessError } from "./lifecycle-utils.ts";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -8,7 +12,6 @@ import type {
   ManagedLoopbackEndpoint,
   ManagedProcessChangedEvent,
   ManagedProcessCapability,
-  ManagedProcessErrorCode,
   ManagedProcessExit,
   ManagedProcessKind,
   ManagedProcessLogStream,
@@ -17,7 +20,6 @@ import type {
   ManagedProcessPublicInfo,
   ManagedProcessReadParams,
   ManagedProcessReadiness,
-  ManagedProcessReaperRecord,
   ManagedProcessStartParams,
   ManagedProcessStartResult,
   ManagedProcessState,
@@ -48,58 +50,20 @@ import { callMain } from "../parent-rpc.ts";
 import { getProcessStartFingerprint, terminatePosixProcessGroup } from "../../shared/node/process-tree.ts";
 import { toolchainRuntime, type ToolchainRuntime } from "../toolchain-runtime.ts";
 import { ManagedProcessOutputBuffer, ManagedProcessOutputDecoder, parseManagedProcessCursor } from "./output-buffer.ts";
-import type { ManagedProcessBackend, ManagedProcessBackendEvent } from "./backend.ts";
+import type {
+  ManagedProcessBackend,
+  ManagedProcessBackendEvent,
+  ManagedProcessExecution,
+  PreparedContainment,
+} from "./backend.ts";
 import { PosixManagedProcessBackend } from "./posix-backend.ts";
 import { WindowsJobProcessBackend } from "./windows-helper-client.ts";
 import type { WindowsManagedProcessHelperDescriptor } from "../../shared/windows-managed-process-helper.ts";
 import { getManagedProcessOwnerIdentity } from "./owner-identity.ts";
 
 const OUTPUT_NOTIFY_MS = 100;
-const START_RATE_WINDOW_MS = 60_000;
-const START_RATE_LIMIT = 12;
 const STOP_TOTAL_TIMEOUT_MS = 8_500;
 const HOST_INSTANCE_ID = randomUUID();
-
-type Waiter = { resolve: () => void };
-type Deferred = { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
-
-type ManagedRecord = {
-  processId: string;
-  runId: string;
-  generation: number;
-  label: string;
-  kind: ManagedProcessKind;
-  state: ManagedProcessState;
-  readiness: ManagedProcessReadiness;
-  readinessSpec: ManagedProcessWaitFor;
-  readinessMatched?: string;
-  ownerSessionId: string;
-  ownerCwd: string;
-  cwd: string;
-  command: string;
-  activateUi: boolean;
-  createdAt: number;
-  startedAt?: number;
-  stoppedAt?: number;
-  stdinOpen: boolean;
-  endpoints: ManagedLoopbackEndpoint[];
-  networkWarnings: string[];
-  restartCount: number;
-  exit?: ManagedProcessExit;
-  output: ManagedProcessOutputBuffer;
-  decoder: ManagedProcessOutputDecoder;
-  backend?: ManagedProcessBackend;
-  removeBackendListener?: () => void;
-  finish?: Deferred;
-  stopSource?: ManagedProcessStopSource;
-  userStopBarrier: boolean;
-  waiters: Set<Waiter>;
-  outputNotifyTimer?: ReturnType<typeof setTimeout>;
-  reaper?: ManagedProcessReaperRecord;
-  reaperRegistered: boolean;
-  stdinWindow: Array<{ at: number; bytes: number }>;
-  agentWaitActive: boolean;
-};
 
 export interface ManagedProcessServiceOptions {
   platform?: NodeJS.Platform;
@@ -114,50 +78,6 @@ export interface ManagedProcessServiceOptions {
   arch?: NodeJS.Architecture;
   posixBackendFactory?: () => ManagedProcessBackend;
   windowsBackendFactory?: (descriptor: WindowsManagedProcessHelperDescriptor) => ManagedProcessBackend;
-}
-
-export class ManagedProcessError extends Error {
-  readonly code: ManagedProcessErrorCode;
-  readonly details?: Record<string, unknown>;
-
-  constructor(code: ManagedProcessErrorCode, message: string, details?: Record<string, unknown>) {
-    super(message);
-    this.name = "ManagedProcessError";
-    this.code = code;
-    this.details = details;
-  }
-}
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((ok, fail) => {
-    resolve = ok;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
-function timeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-  code: ManagedProcessErrorCode = "PROCESS_STOP_TIMEOUT",
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new ManagedProcessError(code, message)), timeoutMs);
-    timer.unref();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 }
 
 function safeWorkerEntryPath(): string {
@@ -193,9 +113,10 @@ export class ManagedProcessService {
   private readonly posixBackendFactory: () => ManagedProcessBackend;
   private readonly windowsBackendFactory: (descriptor: WindowsManagedProcessHelperDescriptor) => ManagedProcessBackend;
   private readonly records = new Map<string, ManagedRecord>();
-  private readonly startTimes: number[] = [];
+  private readonly admission: ManagedProcessAdmission;
   private revision = 0;
   private shuttingDown = false;
+  private admissionEpoch = 0;
   private containmentFailed = false;
   private windowsHelper?: WindowsManagedProcessHelperDescriptor;
 
@@ -206,6 +127,13 @@ export class ManagedProcessService {
     this.runtime = options.runtime ?? toolchainRuntime;
     this.parentCall = options.parentCall ?? callMain;
     this.now = options.now ?? Date.now;
+    this.admission = new ManagedProcessAdmission(
+      () =>
+        [...this.records.values()]
+          .filter((record) => !terminalState(record.state) || record.reaperRegistered || record.launchPending)
+          .map((record) => record.ownerSessionId),
+      this.now,
+    );
     this.posixBackendFactory =
       options.posixBackendFactory ??
       (() => {
@@ -254,7 +182,10 @@ export class ManagedProcessService {
     trusted: boolean,
     params: ManagedProcessStartParams,
     signal?: AbortSignal,
+    execution?: ManagedProcessExecution,
   ): Promise<ManagedProcessStartResult> {
+    const admissionEpoch = this.admissionEpoch;
+
     this.assertStartNotCancelled(signal);
     if (this.shuttingDown)
       throw new ManagedProcessError("PROCESS_FEATURE_DISABLED", "Managed processes are shutting down");
@@ -264,7 +195,6 @@ export class ManagedProcessService {
         "PROCESS_PROJECT_UNTRUSTED",
         "Project trust is required to start a managed process",
       );
-    this.assertStartBudget(ownerSessionId);
 
     let command: string;
     let cwd: string;
@@ -290,25 +220,41 @@ export class ManagedProcessService {
     }
     this.assertStartNotCancelled(signal);
 
-    const now = this.now();
-    const processId = `proc-${randomUUID()}`;
-    const runId = randomUUID();
-    const record = this.createRecord({
-      processId,
-      runId,
-      generation: 1,
-      label: normalizeManagedProcessLabel(params.label, command),
-      kind: params.kind ?? "server",
-      ownerSessionId,
-      ownerCwd,
-      cwd,
-      command,
-      activateUi: params.activateUi === true,
-      createdAt: now,
-      readinessSpec: params.waitFor ?? { type: "none" },
-    });
-    this.records.set(processId, record);
-    this.emitChanged(record, "created");
+    const check = () => {
+      this.assertStartNotCancelled(signal);
+
+      if (this.shuttingDown || this.containmentFailed || this.admissionEpoch !== admissionEpoch)
+        throw new ManagedProcessError("PROCESS_CONTAINMENT_UNAVAILABLE", "Managed process admission is unavailable");
+    };
+    const create = () => {
+      check();
+      const now = this.now();
+      const processId = `proc-${randomUUID()}`;
+      const runId = randomUUID();
+      const record = this.createRecord({
+        processId,
+        runId,
+        generation: 1,
+        label: normalizeManagedProcessLabel(params.label, command),
+        kind: params.kind ?? "server",
+        ownerSessionId,
+        ownerCwd,
+        cwd,
+        command,
+        activateUi: params.activateUi === true,
+        createdAt: now,
+        readinessSpec: params.waitFor ?? { type: "none" },
+      });
+      record.execution = execution;
+      record.nativeBash = execution !== undefined;
+      this.records.set(processId, record);
+      this.emitChanged(record, "created");
+
+      return record;
+    };
+    const record = execution
+      ? await this.admission.waitAndStart(ownerSessionId, create, check, signal, execution.onAdmission)
+      : this.admission.startNow(ownerSessionId, create);
 
     const onAbort = () => {
       if (!record.backend || terminalState(record.state)) return;
@@ -318,7 +264,7 @@ export class ManagedProcessService {
 
     try {
       await this.startRun(record, trusted, signal);
-      await this.observeInitialWindow(record);
+      if (!record.nativeBash) await this.observeInitialWindow(record);
       this.assertStartNotCancelled(signal);
       return this.startResult(record);
     } catch (error) {
@@ -332,6 +278,8 @@ export class ManagedProcessService {
       }
       throw toolchainError(error);
     } finally {
+      record.launchPending = false;
+      this.admission.wake();
       signal?.removeEventListener("abort", onAbort);
     }
   }
@@ -429,6 +377,9 @@ export class ManagedProcessService {
   write(params: ManagedProcessWriteParams, ownerSessionId?: string): { ok: true; runId: string } {
     const record = this.requireRecord(params.processId, ownerSessionId);
     this.assertRun(record, params.runId);
+
+    if (record.nativeBash)
+      throw new ManagedProcessError("PROCESS_STDIN_CLOSED", "Native Bash does not accept interactive input");
     if (record.state !== "running" && record.state !== "ready") {
       throw new ManagedProcessError("PROCESS_NOT_RUNNING", "Managed process is not running");
     }
@@ -496,17 +447,33 @@ export class ManagedProcessService {
         this.emitChanged(record, "exit");
         record.finish?.resolve();
       }
-      if (!terminalState(record.state)) {
-        record.state = "killed";
-        record.stoppedAt = this.now();
-        record.exit = { code: null, reason: "stopped", stoppedBy: source, finishedAt: this.now() };
-        this.emitChanged(record, "exit");
-        record.finish?.resolve();
-      }
       if (error instanceof ManagedProcessError && mode !== "force") {
         this.append(record, "system", "Graceful stop timed out; process tree was force terminated");
       }
     }
+    return this.publicInfo(record);
+  }
+
+  /** Coordinator cleanup waits for containment and crash-recovery acknowledgement, not merely a terminal label. */
+  async settleOwned(processId: string, runId: string, ownerSessionId: string): Promise<ManagedProcessPublicInfo> {
+    if (!ownerSessionId) throw new ManagedProcessError("PROCESS_NOT_FOUND", "Process owner is required");
+    const record = this.requireRecord(processId, ownerSessionId);
+    this.assertRun(record, runId);
+    await this.stop(processId, runId, "graceful", "host", ownerSessionId);
+    await timeout(
+      record.finish?.promise ?? Promise.resolve(),
+      STOP_TOTAL_TIMEOUT_MS,
+      "Process settlement is incomplete",
+    );
+    this.assertRun(record, runId);
+    if (
+      !terminalState(record.state) ||
+      !record.exit ||
+      record.exit.reason === "host-failure" ||
+      record.state === "lost" ||
+      record.reaperRegistered
+    )
+      throw new ManagedProcessError("PROCESS_CONTAINMENT_UNAVAILABLE", "Process containment cleanup is not verified");
     return this.publicInfo(record);
   }
 
@@ -517,8 +484,17 @@ export class ManagedProcessService {
     ownerSessionId?: string,
     trusted = true,
   ): Promise<ManagedProcessPublicInfo> {
+    const admissionEpoch = this.admissionEpoch;
     const record = this.requireRecord(processId, ownerSessionId);
     this.assertRun(record, runId);
+
+    if (record.nativeBash)
+      throw new ManagedProcessError("PROCESS_COMMAND_BLOCKED", "Retry native Bash through its owning task operation");
+    if (record.launchPending)
+      throw new ManagedProcessError(
+        "PROCESS_LIMIT_REACHED",
+        "Wait for the previous launch to settle before restarting",
+      );
     if (source === "agent" && record.userStopBarrier) {
       throw new ManagedProcessError(
         "PROCESS_USER_STOPPED",
@@ -526,7 +502,9 @@ export class ManagedProcessService {
       );
     }
     if (!terminalState(record.state)) await this.stop(processId, runId, "graceful", source, ownerSessionId);
+    await this.settleOwned(processId, runId, record.ownerSessionId);
     this.assertRun(record, runId);
+
     if (source === "agent" && record.userStopBarrier) {
       throw new ManagedProcessError(
         "PROCESS_USER_STOPPED",
@@ -536,6 +514,7 @@ export class ManagedProcessService {
     if (source === "user") record.userStopBarrier = false;
     await this.assertStartEnabled();
     this.assertRun(record, runId);
+
     if (source === "agent" && record.userStopBarrier) {
       throw new ManagedProcessError(
         "PROCESS_USER_STOPPED",
@@ -548,6 +527,10 @@ export class ManagedProcessService {
         "Project trust is required to restart a managed process",
       );
 
+    if (this.admissionEpoch !== admissionEpoch || this.shuttingDown)
+      throw new ManagedProcessError("PROCESS_USER_STOPPED", "Managed process restart was stopped");
+    this.admission.startNow(record.ownerSessionId, () => undefined);
+    record.launchPending = true;
     record.generation += 1;
     record.restartCount += 1;
     record.runId = randomUUID();
@@ -584,13 +567,16 @@ export class ManagedProcessService {
         this.emitChanged(record, "exit");
       }
       throw toolchainError(error);
+    } finally {
+      record.launchPending = false;
+      this.admission.wake();
     }
   }
 
   dismiss(processId: string): { ok: true } {
     const record = this.requireRecord(processId);
-    if (!terminalState(record.state))
-      throw new ManagedProcessError("PROCESS_NOT_RUNNING", "Stop the process before dismissing it");
+    if (!terminalState(record.state) || record.reaperRegistered || record.launchPending)
+      throw new ManagedProcessError("PROCESS_NOT_RUNNING", "Wait for launch and containment cleanup before dismissing");
     if (record.outputNotifyTimer) clearTimeout(record.outputNotifyTimer);
     this.records.delete(processId);
     this.notifyMainCount();
@@ -660,6 +646,8 @@ export class ManagedProcessService {
     permanent = source === "host",
   ): Promise<number> {
     if (permanent) this.shuttingDown = true;
+    this.admissionEpoch++;
+    this.admission.cancelAll();
     const active = [...this.records.values()].filter((record) => isManagedProcessActiveState(record.state));
     await Promise.allSettled(active.map((record) => this.stop(record.processId, record.runId, mode, source)));
     return active.length;
@@ -681,6 +669,7 @@ export class ManagedProcessService {
   }): ManagedRecord {
     const record = {
       ...input,
+      launchPending: true,
       state: "created" as const,
       readiness: input.readinessSpec.type === "none" ? ("not-requested" as const) : ("pending" as const),
       stdinOpen: true,
@@ -758,24 +747,6 @@ export class ManagedProcessService {
     }
   }
 
-  private assertStartBudget(ownerSessionId: string): void {
-    const now = this.now();
-    while (this.startTimes[0] !== undefined && now - this.startTimes[0] > START_RATE_WINDOW_MS) this.startTimes.shift();
-    if (this.startTimes.length >= START_RATE_LIMIT) {
-      throw new ManagedProcessError("PROCESS_LIMIT_REACHED", "Managed process start rate limit reached");
-    }
-    const active = [...this.records.values()].filter((record) => isManagedProcessActiveState(record.state));
-    if (active.length >= MANAGED_PROCESS_LIMITS.globalActive) {
-      throw new ManagedProcessError("PROCESS_LIMIT_REACHED", "Global managed process limit reached");
-    }
-    if (
-      active.filter((record) => record.ownerSessionId === ownerSessionId).length >= MANAGED_PROCESS_LIMITS.sessionActive
-    ) {
-      throw new ManagedProcessError("PROCESS_LIMIT_REACHED", "Session managed process limit reached");
-    }
-    this.startTimes.push(now);
-  }
-
   private async startRun(record: ManagedRecord, trusted: boolean, signal?: AbortSignal): Promise<void> {
     record.state = "starting";
     record.finish = deferred();
@@ -784,7 +755,10 @@ export class ManagedProcessService {
 
     let context: ToolExecutionContext;
     try {
-      context = await this.runtime.createExecutionContext({ cwd: record.cwd, intent: "managed-process", trusted });
+      if (record.nativeBash) await this.assertStartEnabled();
+      context =
+        record.execution?.context ??
+        (await this.runtime.createExecutionContext({ cwd: record.cwd, intent: "managed-process", trusted }));
       this.runtime.requireFromContext("shell.bash", context);
     } catch (error) {
       throw toolchainError(error);
@@ -793,6 +767,7 @@ export class ManagedProcessService {
     if (record.stopSource !== undefined || terminalState(record.state)) {
       throw new ManagedProcessError("PROCESS_USER_STOPPED", "The managed process was stopped while starting");
     }
+
     const shell = this.runtime.requireFromContext("shell.bash", context);
     if (this.platform === "win32") {
       await this.startWindowsRun(record, context, shell, signal);
@@ -834,36 +809,7 @@ export class ManagedProcessService {
         { subcode: boundedSystemMessage(error instanceof Error ? error.message : "WORKER_START_FAILED") },
       );
     }
-    record.reaper = prepared.reaper;
-    let journalRevision: number;
-    try {
-      const registered = await this.parentCall<{ journalRevision?: number }>(
-        "managedProcesses.register",
-        { record: prepared.reaper },
-        5_000,
-      );
-      if (!Number.isSafeInteger(registered.journalRevision) || (registered.journalRevision ?? 0) <= 0) {
-        throw new Error("Invalid journal revision");
-      }
-      journalRevision = registered.journalRevision!;
-      record.reaperRegistered = true;
-    } catch {
-      await backend.dispose();
-      throw new ManagedProcessError(
-        "PROCESS_CONTAINMENT_UNAVAILABLE",
-        "Could not register POSIX managed process crash recovery",
-      );
-    }
-    try {
-      await backend.commit(prepared, journalRevision);
-    } catch (error) {
-      await backend.dispose();
-      throw new ManagedProcessError(
-        "PROCESS_CONTAINMENT_UNAVAILABLE",
-        "POSIX managed process worker could not commit containment",
-        { subcode: boundedSystemMessage(error instanceof Error ? error.message : "WORKER_COMMIT_FAILED") },
-      );
-    }
+    await this.registerAndCommit(record, backend, prepared, "POSIX", signal);
     if (terminalState(record.state)) {
       await record.finish?.promise;
       return;
@@ -921,6 +867,28 @@ export class ManagedProcessService {
         { subcode: boundedSystemMessage(error instanceof Error ? error.message : "HELPER_INVALID_FRAME") },
       );
     }
+    await this.registerAndCommit(record, backend, prepared, "Windows", signal);
+    if (terminalState(record.state)) {
+      await record.finish?.promise;
+      return;
+    }
+    this.assertStartNotCancelled(signal);
+    if (record.userStopBarrier) {
+      await this.stop(record.processId, record.runId, "graceful", "user");
+      throw new ManagedProcessError("PROCESS_USER_STOPPED", "The user stopped this process while it was starting");
+    }
+    if ((record.state as ManagedProcessState) !== "ready") record.state = "running";
+    record.startedAt = this.now();
+    this.emitChanged(record, "state");
+  }
+
+  private async registerAndCommit(
+    record: ManagedRecord,
+    backend: ManagedProcessBackend,
+    prepared: PreparedContainment,
+    platform: "POSIX" | "Windows",
+    signal?: AbortSignal,
+  ): Promise<void> {
     record.reaper = prepared.reaper;
     let journalRevision: number;
     try {
@@ -934,34 +902,39 @@ export class ManagedProcessService {
       journalRevision = registered.journalRevision!;
       record.reaperRegistered = true;
     } catch {
+      // A missing/invalid reply does not prove registration did not reach the Main process.
+      record.reaperRegistered = true;
       await backend.dispose();
       throw new ManagedProcessError(
         "PROCESS_CONTAINMENT_UNAVAILABLE",
-        "Could not register Windows managed process crash recovery",
+        `Could not register ${platform} managed process crash recovery`,
       );
     }
     try {
+      this.assertStartNotCancelled(signal);
+      if (record.stopSource !== undefined || record.userStopBarrier || terminalState(record.state))
+        throw new ManagedProcessError("PROCESS_USER_STOPPED", "Managed process stopped before command commit");
+    } catch (error) {
+      await backend.dispose();
+      throw error;
+    }
+    try {
       await backend.commit(prepared, journalRevision);
+      record.execution?.onCommitted?.();
+      if (record.nativeBash && !terminalState(record.state)) {
+        backend.write({ text: "", appendNewline: false, close: true });
+        record.stdinOpen = false;
+      }
     } catch (error) {
       await backend.dispose();
       throw new ManagedProcessError(
         "PROCESS_CONTAINMENT_UNAVAILABLE",
-        "Windows managed process helper could not commit containment",
-        { subcode: boundedSystemMessage(error instanceof Error ? error.message : "TARGET_RESUME_FAILED") },
+        `${platform} managed process could not commit containment`,
+        {
+          subcode: boundedSystemMessage(error instanceof Error ? error.message : "PROCESS_COMMIT_FAILED"),
+        },
       );
     }
-    if (terminalState(record.state)) {
-      await record.finish?.promise;
-      return;
-    }
-    this.assertStartNotCancelled(signal);
-    if (record.userStopBarrier) {
-      await this.stop(record.processId, record.runId, "graceful", "user");
-      throw new ManagedProcessError("PROCESS_USER_STOPPED", "The user stopped this process while it was starting");
-    }
-    if ((record.state as ManagedProcessState) !== "ready") record.state = "running";
-    record.startedAt = this.now();
-    this.emitChanged(record, "state");
   }
 
   private assertStartNotCancelled(signal?: AbortSignal): void {
@@ -982,6 +955,15 @@ export class ManagedProcessService {
       }
       try {
         await timeout(record.finish?.promise ?? Promise.resolve(), 2_500, "Managed process cleanup did not finish");
+        // Exit can precede a delayed registration reply. Clear that late lease only
+        // after verified containment settlement; retain it on host-failure/loss.
+        if (
+          terminalState(record.state) &&
+          record.exit &&
+          record.exit.reason !== "host-failure" &&
+          record.state !== "lost"
+        )
+          await this.unregisterReaper(record);
       } catch {
         this.containmentFailed = true;
       }
@@ -1018,6 +1000,7 @@ export class ManagedProcessService {
     event: ManagedProcessBackendEvent,
   ): void {
     if (record.backend !== backend) return;
+    record.execution?.onEvent(event);
     if (event.type === "stdout" || event.type === "stderr") {
       record.decoder.write(event.type, event.bytes);
       return;
@@ -1053,7 +1036,9 @@ export class ManagedProcessService {
     if (record.backend !== backend || terminalState(record.state)) return;
     record.decoder.end("stdout");
     record.decoder.end("stderr");
-    const stopped = exit.reason === "stopped" || record.stopSource !== undefined || record.state === "stopping";
+    const stopped =
+      exit.reason !== "host-failure" &&
+      (exit.reason === "stopped" || record.stopSource !== undefined || record.state === "stopping");
     record.state = stopped ? "killed" : exit.reason === "host-failure" ? "lost" : exit.code === 0 ? "exited" : "failed";
     record.stoppedAt = this.now();
     record.stdinOpen = false;
@@ -1071,7 +1056,9 @@ export class ManagedProcessService {
     } else {
       await this.unregisterReaper(record);
     }
+    record.execution = undefined;
     record.finish?.resolve();
+    this.admission.wake();
   }
 
   private append(record: ManagedRecord, stream: ManagedProcessLogStream, text: string): void {
@@ -1291,6 +1278,7 @@ export class ManagedProcessService {
     this.server.emit("processes.changed", record.processId, event);
     this.notifyMainCount();
     this.resolveWaiters(record);
+    this.admission.wake();
   }
 
   private notifyMainCount(): void {
@@ -1309,7 +1297,7 @@ export class ManagedProcessService {
   private pruneExited(): void {
     const now = this.now();
     const exited = [...this.records.values()]
-      .filter((record) => terminalState(record.state))
+      .filter((record) => terminalState(record.state) && !record.launchPending && !record.reaperRegistered)
       .sort((left, right) => (right.stoppedAt ?? right.createdAt) - (left.stoppedAt ?? left.createdAt));
     const remove = exited.filter(
       (record, index) =>

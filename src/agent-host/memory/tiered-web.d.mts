@@ -15,9 +15,10 @@ export interface WebPayload {
   promptHash: string;
   warmVersion: string | null;
   hotSourceEntryIds: string[];
-  newConversation: true;
+  newConversation: boolean;
+  conversationId?: string;
   dedupe: false;
-  attachments: [];
+  attachments: Array<{ kind: string; mimeType: string; data: string }>;
 }
 export interface WebPlan {
   payload: WebPayload;
@@ -37,6 +38,15 @@ export interface WebPlan {
     websiteWindowMeasured: false;
   };
 }
-export function buildTieredWebPlan(snapshot: TieredSnapshot, model: Model<Api>, policy?: BudgetPolicy): WebPlan;
+export function buildTieredWebPlan(
+  snapshot: TieredSnapshot,
+  model: Model<Api>,
+  policy?: BudgetPolicy,
+  options?: {
+    images?: Array<{ type: string; mimeType: string; data: string }>;
+    conversationId?: string;
+    systemPrompt?: string;
+  },
+): WebPlan;
 export function checkWebDispatch(request: unknown, payload: WebPayload): string;
 export function checkWebReceipt(receipt: unknown, payload: WebPayload, dispatchId: string, markdown: string): unknown;

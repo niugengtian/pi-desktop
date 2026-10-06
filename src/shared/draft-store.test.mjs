@@ -49,18 +49,24 @@ test("base64 size accounting excludes oversized image sets before serialization"
   assert.deepEqual(persistableDraftImages([{ data: oversized, mimeType: "image/png" }]), []);
 });
 
-test("image additions are rejected with distinct count and byte-limit reasons", () => {
+test("active drafts accept more than eight images and enforce the per-image 10 MiB boundary", () => {
   const tiny = (name) => ({ name, data: "YQ==", mimeType: "image/png" });
   const countSelection = selectDraftImageAdditions(
     [tiny("one"), tiny("two"), tiny("three"), tiny("four")],
-    [tiny("five")],
+    [tiny("five"), tiny("six"), tiny("seven"), tiny("eight"), tiny("nine")],
   );
-  assert.deepEqual(countSelection.accepted, []);
-  assert.equal(countSelection.rejected[0].reason, "count");
+  assert.deepEqual(
+    countSelection.accepted.map((image) => image.name),
+    ["five", "six", "seven", "eight", "nine"],
+  );
+  assert.deepEqual(countSelection.rejected, []);
 
-  const oversized = "A".repeat(Math.ceil(((MAX_PERSISTED_DRAFT_IMAGE_BYTES + 1) * 4) / 3));
-  const byteSelection = selectDraftImageAdditions([], [{ data: oversized, mimeType: "image/png" }, tiny("small")]);
-  assert.deepEqual(byteSelection.accepted, [tiny("small")]);
+  const exactLimit = { data: Buffer.alloc(10 * 1024 * 1024).toString("base64"), mimeType: "image/png" };
+  const oversized = { data: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64"), mimeType: "image/png" };
+  const byteSelection = selectDraftImageAdditions([], [oversized, exactLimit, tiny("small")]);
+  assert.deepEqual(byteSelection.accepted, [exactLimit, tiny("small")]);
+  assert.equal(byteSelection.rejected.length, 1);
+  assert.equal(byteSelection.rejected[0].image, oversized);
   assert.equal(byteSelection.rejected[0].reason, "bytes");
 });
 

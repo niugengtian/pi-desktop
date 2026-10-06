@@ -20,8 +20,12 @@ const ENTRY_TYPE = "pi-desktop-task-memory";
 /** Task memory is staged for review, never injected into main-chat context implicitly. */
 export function createTaskMemoryExtension({
   getRemoteRuntime = () => undefined,
+  createRemoteRunner = createFlashMemoryRunner,
+  captureExecutionCheck = () => () => true,
   onRemoteEvent = () => {},
 }: {
+  createRemoteRunner?: typeof createFlashMemoryRunner;
+  captureExecutionCheck?: () => () => boolean;
   getRemoteRuntime?: () => ModelRuntime | Promise<ModelRuntime> | undefined;
   onRemoteEvent?: (event: { phase: string; at: string; status?: number }) => void;
 } = {}) {
@@ -124,6 +128,8 @@ export function createTaskMemoryExtension({
           return;
         }
         if (!snapshot.settings.enabled || !ctx.isIdle()) return;
+        const executionIsCurrent = captureExecutionCheck();
+        if (!executionIsCurrent()) return;
         const remote = snapshot.settings.primary === FLASH_MEMORY_MODEL;
         if (remote && (snapshot.settings.fallback || !hasRemoteConsent(ctx, snapshot.version))) {
           stale = true;
@@ -150,6 +156,7 @@ export function createTaskMemoryExtension({
         const isCurrent = () => {
           try {
             return (
+              executionIsCurrent() &&
               job === task &&
               !controller.signal.aborted &&
               ctx.sessionManager === manager &&
@@ -183,7 +190,7 @@ export function createTaskMemoryExtension({
             const runtime = remote ? await getRemoteRuntime() : undefined;
             if (!isCurrent()) return;
             const run = remote
-              ? createFlashMemoryRunner({
+              ? createRemoteRunner({
                   runtime: runtime!,
                   signal: controller.signal,
                   authorized: () =>

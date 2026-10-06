@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { WEB_CONTRACT } from "./tiered-contract.mjs";
 import { spawn as nodeSpawn } from "node:child_process";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_LINE_BYTES = 56 * 1024 * 1024;
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024;
+const MAX_LINE_BYTES = 120 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_TOTAL_BYTES = 80 * 1024 * 1024;
 const MAX_IMAGES = 8;
 const SUPPORTED_SITES = new Set(["deepseek", "chatgpt", "gemini"]);
 
@@ -71,6 +72,11 @@ export function latestUserText(context) {
   return input.text;
 }
 
+function isCanonicalBase64(value) {
+  if (!value || value.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+
 function normalizeImages(images) {
   if (!Array.isArray(images)) return [];
   if (images.length > MAX_IMAGES) {
@@ -83,15 +89,18 @@ function normalizeImages(images) {
     if (!/^image\/(png|jpeg|webp|gif)$/.test(mimeType)) {
       throw new Error(`Page Provider does not support image type: ${mimeType || "unknown"}.`);
     }
+    if (!isCanonicalBase64(data)) {
+      throw new Error("Page Provider images must contain canonical base64 data.");
+    }
     const size = Buffer.from(data, "base64").byteLength;
-    if (!data || size === 0 || size > MAX_IMAGE_BYTES) {
-      throw new Error("Each Page Provider image must be between 1 byte and 15 MiB.");
+    if (size === 0 || size > MAX_IMAGE_BYTES) {
+      throw new Error("Each Page Provider image must be between 1 byte and 10 MiB.");
     }
     totalBytes += size;
     return { kind: "image", mimeType, data };
   });
   if (totalBytes > MAX_IMAGE_TOTAL_BYTES) {
-    throw new Error("Page Provider images may total at most 40 MiB per turn.");
+    throw new Error("Page Provider images may total at most 80 MiB per turn.");
   }
   return normalized;
 }
@@ -138,6 +147,8 @@ async function runPageProviderRequest({
   conversationId,
   newConversation = false,
   dedupe = false,
+  deliveryContract,
+  beforeDispatch,
   signal,
   onState = () => {},
   onRemote = () => {},
@@ -194,13 +205,26 @@ async function runPageProviderRequest({
             dedupe: dedupe === true,
             newConversation: newConversation === true,
             ...(normalizedConversationId ? { conversationId: normalizedConversationId } : {}),
+            ...(deliveryContract ? { deliveryContract } : {}),
           }
         : method === "provider.open"
           ? { site: normalizedSite, conversationId: normalizedConversationId }
           : { site: normalizedSite },
   };
 
+  const strict = deliveryContract === WEB_CONTRACT;
+  if (
+    deliveryContract &&
+    (!strict ||
+      method !== "turn.send" ||
+      typeof beforeDispatch !== "function" ||
+      (!newConversation && !normalizedConversationId) ||
+      (newConversation && normalizedConversationId) ||
+      dedupe)
+  )
+    throw new Error("Tiered Web dispatch contract/route is invalid.");
   return new Promise((resolve, reject) => {
+    let permitted = false;
     let settled = false;
     let stdoutBuffer = "";
     let completed;
@@ -279,6 +303,41 @@ async function runPageProviderRequest({
           return;
         }
 
+        const correlationId = String(event.turnId ?? event.id ?? "");
+        if (correlationId && correlationId !== requestId) {
+          child.kill("SIGTERM");
+          finish(new Error("Page Provider bridge emitted an event for another request."));
+          return;
+        }
+
+        if (event.type === "turn.dispatch_ready") {
+          try {
+            if (
+              !strict ||
+              permitted ||
+              signal?.aborted ||
+              correlationId !== requestId ||
+              JSON.stringify(event.request) !== JSON.stringify(request)
+            )
+              throw new Error("Web dispatch frame changed.");
+            const returned = beforeDispatch(JSON.parse(JSON.stringify(request)));
+            if (returned !== undefined)
+              throw new Error("Web dispatch guard must complete synchronously and throw on refusal.");
+            permitted = true;
+            child.stdin.end(
+              JSON.stringify({
+                id: requestId,
+                method: "turn.dispatch",
+                promptHash: createHash("sha256").update(prompt, "utf8").digest("hex"),
+              }) + "\n",
+              "utf8",
+            );
+          } catch (error) {
+            child.kill("SIGTERM");
+            finish(error);
+          }
+          continue;
+        }
         if (event.type === "provider.state" || event.type === "turn.status") {
           const state = String(event.state ?? event.status ?? "");
           if (STATE_SET.has(state)) onState(state);
@@ -321,20 +380,46 @@ async function runPageProviderRequest({
           return;
         }
         if (event.type === "turn.completed") {
+          if (method !== "turn.send") {
+            child.kill("SIGTERM");
+            finish(new Error("Page Provider bridge returned a turn result for a different request method."));
+            return;
+          }
           const markdown = String(event.message?.markdown ?? "");
           if (!markdown.trim()) {
+            child.kill("SIGTERM");
             finish(new Error("Page Provider bridge completed without a Markdown response."));
             return;
           }
+          if (
+            strict &&
+            (!permitted ||
+              correlationId !== requestId ||
+              event.receipt?.schema !== WEB_CONTRACT ||
+              event.receipt.promptHash !== createHash("sha256").update(prompt, "utf8").digest("hex") ||
+              event.receipt.responseHash !== createHash("sha256").update(markdown, "utf8").digest("hex"))
+          ) {
+            child.kill("SIGTERM");
+            finish(new Error("Web response lacks a matching gated receipt."));
+            return;
+          }
           completed = {
+            ...(strict ? { receipt: event.receipt } : {}),
             turnId: requestId,
             markdown,
             remote: event.remote && typeof event.remote === "object" ? event.remote : {},
           };
           onState("completed");
-          continue;
+          child.kill("SIGTERM");
+          finish(undefined, completed);
+          return;
         }
         if (event.type === "provider.probed") {
+          if (method !== "provider.probe") {
+            child.kill("SIGTERM");
+            finish(new Error("Page Provider bridge returned a probe result for a different request method."));
+            return;
+          }
           const state = String(event.state ?? "");
           if (!STATE_SET.has(state)) {
             child.kill("SIGTERM");
@@ -342,16 +427,26 @@ async function runPageProviderRequest({
             return;
           }
           completed = { state };
+          child.kill("SIGTERM");
+          finish(undefined, completed);
+          return;
         }
         if (event.type === "provider.opened") {
           const openedSite = String(event.provider?.site ?? "");
           const openedConversationId = String(event.provider?.conversationId ?? "");
-          if (openedSite !== normalizedSite || openedConversationId !== normalizedConversationId) {
+          if (
+            method !== "provider.open" ||
+            openedSite !== normalizedSite ||
+            openedConversationId !== normalizedConversationId
+          ) {
             child.kill("SIGTERM");
             finish(new Error("Page Provider bridge opened an unexpected conversation."));
             return;
           }
           completed = { site: openedSite, conversationId: openedConversationId };
+          child.kill("SIGTERM");
+          finish(undefined, completed);
+          return;
         }
         if (event.type === "provider.started") {
           const startedSite = String(event.provider?.site ?? "");
@@ -361,6 +456,9 @@ async function runPageProviderRequest({
             return;
           }
           completed = { site: startedSite };
+          child.kill("SIGTERM");
+          finish(undefined, completed);
+          return;
         }
       }
     });
@@ -381,7 +479,8 @@ async function runPageProviderRequest({
     });
 
     onState(method === "turn.send" ? "sending" : "attaching");
-    child.stdin.end(`${JSON.stringify(request)}\n`, "utf8");
+    if (strict) child.stdin.write(`${JSON.stringify(request)}\n`, "utf8");
+    else child.stdin.end(`${JSON.stringify(request)}\n`, "utf8");
   });
 }
 

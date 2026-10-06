@@ -42,6 +42,7 @@ const { useSessionList, SessionSidebar, testApi } = await importTestBundle("sess
         export function reset(next, runningNext, worktreeResponse) { worktrees = worktreeResponse;subscriptions.length = running.length = lists.length = requests.length = 0; installation = next; runningInstallation = runningNext;}
         function pending(list, method, params) {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});list.push({method,params,resolve,reject});return promise;}
         export function listSessions() {return pending(lists, 'sessions.list');}
+        export async function subscribe() { return () => {}; }
         export async function subscribeRunning(on) {const entry={on,closed:0};running.push(entry);if(runningInstallation) await runningInstallation;return()=>entry.closed++;}
         export async function subscribeSessionsChanged(on) {
           const entry = {on, closed: 0}; subscriptions.push(entry);
@@ -75,12 +76,24 @@ const session = (id, name = id) => ({
 });
 const response = (sessions, runningSessionIds = []) => ({ sessions, runningSessionIds });
 
-async function mount(t, { sidebar = false, installation, runningInstallation, storedUnread = [], worktrees } = {}) {
+async function mount(
+  t,
+  {
+    sidebar = false,
+    installation,
+    runningInstallation,
+    storedUnread = [],
+    storedHidden = [],
+    selectedCwd = "/project",
+    worktrees,
+  } = {},
+) {
   testApi.reset(installation, runningInstallation, worktrees);
   const previous = new Map(
     ["window", "document", "EventSource"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
   );
   const storage = new Map(storedUnread.length ? [["pi-desktop:unread-session-ids", JSON.stringify(storedUnread)]] : []);
+  if (storedHidden.length) storage.set("pi-desktop:hidden-projects", JSON.stringify(storedHidden));
   const sources = testApi.running,
     requests = testApi.lists,
     mutations = testApi.requests;
@@ -130,7 +143,7 @@ async function mount(t, { sidebar = false, installation, runningInstallation, st
       ? createElement(SessionSidebar, {
           sessionList: current,
           selectedSessionId: null,
-          selectedCwd: "/project",
+          selectedCwd,
           onSelectSession,
           onSessionDeleted,
           onCwdChange,
@@ -476,4 +489,28 @@ test("toolchain project invalidation refreshes worktrees and session grouping wi
     session: { ...session("one", "renamed"), projectRoot: "/canonical/project" },
   });
   assert.equal(reads.length, 2, "ordinary message and title changes do not refetch worktrees");
+});
+
+test("visible delete shortcut uses existing confirmation and backend without forcing deletion", async (t) => {
+  const f = await mount(t, { sidebar: true });
+  await f.reply(0, response([session("one")]));
+  await f.click("Delete “one”?");
+  assert.equal(f.mutations.length, 0);
+  await f.click("Delete");
+  assert.deepEqual(f.next("sessions.delete").params, { id: "one" });
+  await f.replyRpc("sessions.delete", { ok: true });
+  assert.deepEqual(f.deleted, ["one"]);
+});
+
+test("startup does not automatically reselect a removed project", async (t) => {
+  const f = await mount(t, { sidebar: true, storedHidden: ["/hidden"], selectedCwd: null });
+  await f.reply(
+    0,
+    response([
+      { ...session("hidden"), cwd: "/hidden", projectRoot: "/hidden", modified: "2026-10-06" },
+      { ...session("visible"), modified: "2026-10-05" },
+    ]),
+  );
+  assert.equal(f.selectedDirectories.at(-1), "/project");
+  assert.ok(!f.selectedDirectories.includes("/hidden"));
 });

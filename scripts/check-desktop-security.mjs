@@ -23,6 +23,7 @@ const channelMediaStore = read("src/agent-host/channels/media-store.ts");
 const channelOutboundFiles = read("src/agent-host/channels/outbound-files.ts");
 const channelPiBridge = read("src/agent-host/channels/pi-session-bridge.ts");
 const rpcManager = read("src/agent-host/rpc-manager.ts");
+const sessionMemoryServices = read("src/agent-host/session-memory-services.ts");
 const legacyChannelContext = read("src/agent-host/legacy-channel-context.ts");
 const weixinMedia = read("src/agent-host/channels/adapters/weixin/media.ts");
 const channelContract = read("src/contract/api.ts");
@@ -520,10 +521,13 @@ const checks = [
   ],
   [
     rpcManager.includes("expandPromptTemplates: false") &&
-      rpcManager.includes("createLegacyChannelContextExtension()") &&
+      rpcManager.includes("await createDesktopSessionServices(") &&
+      sessionMemoryServices.includes("createLegacyChannelContextExtension()") &&
+      sessionMemoryServices.includes("resourceLoaderOptions: { extensionFactories }") &&
       legacyChannelContext.includes('pi.on("context"') &&
       legacyChannelContext.includes("stripLegacyChannelPrompts(event.messages)") &&
-      !rpcManager.includes("agent.state!.messages ="),
+      !rpcManager.includes("agent.state!.messages =") &&
+      !sessionMemoryServices.includes("agent.state!.messages ="),
     "channel prompts must avoid local expansion and remove legacy transport metadata from model history",
   ],
   [

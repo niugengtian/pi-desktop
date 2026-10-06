@@ -1,3 +1,4 @@
+import { readHiddenProjects } from "@/lib/project-history";
 import { subscribeRunning } from "@/lib/api-client";
 import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from "react";
 import type { SessionInfo } from "@/lib/types";
@@ -227,7 +228,8 @@ export function SessionSidebar({
     }
 
     if (selectedCwd === null) {
-      const projects = getRecentProjects(allSessions);
+      const hidden = readHiddenProjects();
+      const projects = getRecentProjects(allSessions).filter((project) => !hidden.has(project));
       if (projects.length > 0) setSelectedCwd(projects[0]);
     }
   }, [

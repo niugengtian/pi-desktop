@@ -40,6 +40,11 @@ export function readPageProviderBindings(filePath: string): PageProviderBindingS
     } catch {
       continue;
     }
+    if (entry.type === "custom" && entry.customType === "page-provider-binding-reset") {
+      const reset = entry.data as { modelId?: unknown } | undefined;
+      if (typeof reset?.modelId === "string") bindings.delete(reset.modelId);
+      continue;
+    }
     if (entry.type !== "custom" || typeof entry.customType !== "string" || !BINDING_TYPES.has(entry.customType)) {
       continue;
     }

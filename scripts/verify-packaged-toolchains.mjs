@@ -10,6 +10,7 @@ import { darwinCodeDigest } from "../src/main/toolchains/darwin-binary-integrity
 import { extractFile, listPackage } from "@electron/asar";
 import { verifyWindowsHelperPe } from "./windows-helper-pe.mjs";
 import { validatePiPackageGraph } from "./pi-runtime-contract.mjs";
+import { assertSuccessfulSpawn } from "./process-utils.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expectedPiVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).dependencies?.[
@@ -503,6 +504,9 @@ function runPackagedStartup(executable, toolTarget, environmentPatch = {}, extra
     XDG_DATA_HOME: path.join(isolated, ".local", "share"),
     ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
     ...environmentPatch,
+    PI_DESKTOP_EXPECTED_PI_VERSION: expectedPiVersion,
+    PI_CODING_AGENT_DIR: path.join(isolated, "agent"),
+    PI_CODING_AGENT_SESSION_DIR: path.join(isolated, "sessions"),
   };
   try {
     const result = spawnSync(
@@ -516,11 +520,12 @@ function runPackagedStartup(executable, toolTarget, environmentPatch = {}, extra
         windowsHide: true,
       },
     );
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(
-        `Packaged startup exited ${result.status}: ${[result.stdout, result.stderr].filter(Boolean).join("\n").slice(-4_000)}`,
-      );
+    try {
+      assertSuccessfulSpawn(result, "Packaged startup");
+    } catch (error) {
+      throw new Error(`${error.message}: ${[result.stdout, result.stderr].filter(Boolean).join("\n").slice(-4_000)}`, {
+        cause: error,
+      });
     }
     const reports = [];
     walkFiles(isolated, (file) => {

@@ -6,5 +6,6 @@ export declare function createFlashMemoryRunner(options: {
   runtime: ModelRuntime;
   signal?: AbortSignal;
   authorized: () => boolean;
+  transport?: typeof fetch;
   onEvent?: (event: { phase: string; at: string; status?: number }) => void;
 }): (id: string, prompt: string) => Promise<string>;

@@ -1,3 +1,4 @@
+import { ModelSessions } from "./model-sessions.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
@@ -42,6 +43,10 @@ async function fixture(
     warmRunner,
     consentVersion,
     confirm = async () => true,
+    adaptive = false,
+    automatic = false,
+    modelBindings = false,
+    fresh = false,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "pi-tiered-budget-fictional-"));
@@ -158,7 +163,7 @@ async function fixture(
           id,
           name: `Fictional ${id}`,
           reasoning: false,
-          input: ["text"],
+          input: ["text", "image"],
           contextWindow,
           maxTokens: 256,
           cost: usage.cost,
@@ -180,13 +185,18 @@ async function fixture(
       stopReason: "stop",
       timestamp: 3,
     });
-  user(oldText ?? "Fictional old fact 17, planned not done.");
-  assistant();
-  const kept = user("Fictional latest span: rope, three boxes, deck. Not completed.");
-  assistant();
-  if (warm) manager.appendCompaction("FICTIONAL_WARM_PLAN_ONLY_17", kept, 100);
-  const prefix = readFileSync(manager.getSessionFile());
+  if (!fresh) {
+    user(oldText ?? "Fictional old fact 17, planned not done.");
+    assistant();
+    const kept = user("Fictional latest span: rope, three boxes, deck. Not completed.");
+    assistant();
+    if (warm) manager.appendCompaction("FICTIONAL_WARM_PLAN_ONLY_17", kept, 100);
+  }
+  const prefix = existsSync(manager.getSessionFile()) ? readFileSync(manager.getSessionFile()) : Buffer.alloc(0);
+  const bindings = new ModelSessions();
   const controller = new TieredBudgetController({
+    adaptive,
+    automatic,
     warmRunner: warmRunner ? (options) => warmRunner(runtime, options) : undefined,
     consentVersion,
     supports: (model) =>
@@ -211,7 +221,11 @@ async function fixture(
       noPromptTemplates: true,
       noThemes: true,
       systemPromptOverride: () => "FICTIONAL_SYSTEM",
-      extensionFactories: [...(installBudget ? [controller.extension()] : []), ...extensions],
+      extensionFactories: [
+        ...(modelBindings ? [bindings.extension()] : []),
+        ...(installBudget ? [controller.extension()] : []),
+        ...extensions,
+      ],
     },
   });
   const services = {
@@ -227,6 +241,7 @@ async function fixture(
     customTools,
   });
   if (installBudget) controller.install(session);
+  if (modelBindings) bindings.install(session);
   const notices = [];
   const errors = [];
   await session.bindExtensions({
@@ -255,6 +270,7 @@ async function fixture(
     session,
     runtime,
     controller,
+    bindings,
     nativeSettings,
     services,
     captures,
@@ -267,6 +283,16 @@ async function fixture(
 function plugin(factory) {
   return { name: "fictional-fixture-transform", factory };
 }
+
+test("new native sessions can send their first turn before Pi flushes the initial JSONL", async (t) => {
+  for (const api of ["openai-completions", "openai-codex-responses"]) {
+    const f = await fixture(t, { api, fresh: true, automatic: true, adaptive: true, modelBindings: true });
+    assert.equal(existsSync(f.manager.getSessionFile()), false);
+    await f.session.prompt("Fictional first request");
+    assert.equal(f.captures.length, 1);
+    assert.equal(existsSync(f.manager.getSessionFile()), true);
+  }
+});
 
 test("Codex actual SSE request, catalog-output reserve and opaque replay across A-B-A", async (t) => {
   const f = await fixture(t, { api: "openai-codex-responses", codexReasoning: true, warm: true });
@@ -349,7 +375,7 @@ test("Codex final input transform overrun blocks before HTTP with no WS/retry fa
   assert.equal(f.controller.lastReport.action, "block");
 });
 
-function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {}) {
+function simulatedFlash(captures, { invalid = false, oversized = false, wait = async () => {} } = {}) {
   return (runtime, options) => {
     runtime.registerProvider("deepseek", {
       api: "openai-completions",
@@ -360,7 +386,7 @@ function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {
           id: "deepseek-flash",
           name: "Fictional Flash transport",
           reasoning: true,
-          input: ["text"],
+          input: ["text", "image"],
           contextWindow: 131072,
           maxTokens: 2048,
           cost: usage.cost,
@@ -380,14 +406,19 @@ function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {
         const source = JSON.parse(body.messages[1].content);
         const answer = JSON.stringify({
           sourceHash: source.sourceHash,
-          facts: invalid
-            ? []
-            : source.records
-                .filter((record) => record.text.trim())
-                .map((record) => ({
-                  sourceId: record.sourceId,
-                  quote: record.text.startsWith("Fictional older") ? "Fictional older fact 17. " : record.text,
-                })),
+          summary: invalid
+            ? null
+            : oversized
+              ? source.task
+                ? "Fictional older fact 17; implementation verified, delivery pending."
+                : "Fictional older fact 17. " + "重复说明".repeat(500)
+              : source.records
+                  .filter((record) => record.text.trim())
+                  .map((record) =>
+                    record.text.startsWith("Fictional older") ? "Fictional older fact 17. " : record.text,
+                  )
+                  .join("\n")
+                  .slice(0, source.targetSummaryChars),
         });
         return new globalThis.Response(
           `data: ${JSON.stringify({ id: "fixture-flash", object: "chat.completion.chunk", created: 1, model: "deepseek-flash", choices: [{ index: 0, delta: { role: "assistant", content: answer }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "fixture-flash", object: "chat.completion.chunk", created: 1, model: "deepseek-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\ndata: [DONE]\n\n`,
@@ -397,6 +428,33 @@ function simulatedFlash(captures, { invalid = false, wait = async () => {} } = {
     });
   };
 }
+test("adaptive small and medium histories send only the ordinary SDK request, without Flash compaction", async (t) => {
+  for (const oldText of ["Fictional small history", "Fictional medium text. ".repeat(850)]) {
+    const flash = [];
+    const f = await fixture(t, { adaptive: true, oldText, warmRunner: simulatedFlash(flash, { long: true }) });
+    await f.enable({ native: false });
+    await f.session.prompt("Fictional continuation");
+    assert.equal(flash.length, 0);
+    assert.equal(f.captures.length, 1);
+    assert.ok(!f.manager.getBranch().some((entry) => entry.type === "compaction"));
+  }
+});
+test("reviewed long Flash source commits one native warm before a real SDK handoff request", async (t) => {
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(800),
+    warmRunner: simulatedFlash(flash, { long: true }),
+  });
+  await f.enable({ native: false });
+  await f.session.prompt("Fictional continuation after reviewed long history");
+  assert.equal(flash.length, 1);
+  assert.equal(f.captures.length, 1);
+  const snapshot = buildTieredSnapshot(f.manager);
+  assert.match(snapshot.warm.summary, /Fictional older fact 17/);
+  assert.match(snapshot.warm.summary, /Original transcript/);
+  assert.ok(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length).equals(f.prefix));
+  assert.ok(!JSON.stringify(f.captures[0]).includes("Fictional older fact 17. ".repeat(800)));
+});
 
 test("incremental Flash SDK transport mock: one reviewed native warm, no selected-model summary or previous warm resend", async (t) => {
   const flash = [];
@@ -417,7 +475,7 @@ test("incremental Flash SDK transport mock: one reviewed native warm, no selecte
   assert.ok(!Object.hasOwn(flash[0], "reasoning_effort"));
   assert.ok(!flash[0].tools);
   const snapshot = buildTieredSnapshot(f.manager);
-  assert.ok(snapshot.files["warm/facts.jsonl"].includes("Fictional older fact 17"));
+  assert.ok(snapshot.files["warm/summary.md"].includes("Fictional older fact 17"));
   assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length), f.prefix);
   await f.session.prompt("Fictional later hot span");
   await f.session.compact();
@@ -508,7 +566,7 @@ test("Flash source denial, malformed facts or final review denial never promote 
       warmRunner: simulatedFlash(flash, { invalid: mode === "bad-facts" }),
       confirm: async (title) =>
         !(mode === "source-denied" && title.includes("ONE incremental")) &&
-        !(mode === "review-denied" && title.includes("Review omissions")),
+        !(mode === "review-denied" && title.includes("Review warm summary")),
     });
     await f.enable();
     await f.session.prompt("/tiered-warm-flash");
@@ -879,4 +937,175 @@ test("native JSONL changed outside SDK during summary cannot commit or dispatch 
   assert.equal(f.manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
   assert.equal(f.captures.length, 1, "Only the already-dispatched summary; stale ordinary chat is refused");
   assert.match(readFileSync(path, "utf8"), /older fact 19/);
+});
+
+test("real SDK commits one warm only after every bounded incremental segment returns and review passes", async (t) => {
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(1200),
+    warmRunner: simulatedFlash(flash, { long: true }),
+  });
+  for (let i = 0; i < 5; i++)
+    f.manager.appendMessage({ role: "user", content: "Fictional older fact 17. ".repeat(1200), timestamp: 3 + i });
+  f.manager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "Fictional prior turn ended." }],
+    api: "openai-completions",
+    provider: "fictional-a",
+    model: "a",
+    stopReason: "stop",
+    usage,
+    timestamp: 10,
+  });
+  f.manager.appendMessage({ role: "user", content: "Fictional short latest span.", timestamp: 11 });
+  f.session.refreshContext();
+  await f.enable();
+  await f.session.prompt("Fictional latest delivery still pending.");
+  assert.ok(flash.length > 1, JSON.stringify({ notices: f.notices, errors: f.errors }));
+  for (const request of flash) assert.ok(Buffer.byteLength(request.messages[1].content) <= 64 * 1024);
+  assert.equal(
+    f.manager.getBranch().filter((e) => e.type === "compaction").length,
+    1,
+    JSON.stringify({ notices: f.notices, errors: f.errors }),
+  );
+  assert.equal(
+    f.captures.length,
+    1,
+    JSON.stringify({
+      notices: f.notices,
+      errors: f.errors,
+      report: f.controller.lastReport,
+      last: f.session.messages.at(-1),
+    }),
+  );
+  assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length), f.prefix);
+});
+
+test("oversized Flash summaries are consolidated without resending original history before one native commit", async (t) => {
+  const flash = [];
+  const f = await fixture(t, {
+    oldText: "Fictional older fact 17. ".repeat(400),
+    warmRunner: simulatedFlash(flash, { oversized: true }),
+  });
+  await f.enable({ native: false });
+  await f.session.prompt("Continue after memory reduction");
+  assert.equal(flash.length, 2);
+  const input = JSON.parse(flash[1].messages[1].content);
+  assert.ok(input.task.includes("合并"));
+  assert.ok(!input.records[0].text.includes("Fictional older fact 17. ".repeat(2)));
+  const entries = f.manager.getBranch().filter((e) => e.type === "compaction");
+  assert.equal(entries.length, 1);
+  assert.match(entries[0].summary, /delivery pending/);
+  assert.equal(entries[0].details.tieredWarm.version, 1);
+  assert.ok(entries[0].details.tieredWarm.consolidationSourceHash);
+  assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, f.prefix.length), f.prefix);
+});
+
+test("automatic policy sends image batches before final request and restores original A binding after B", async (t) => {
+  const f = await fixture(t, { adaptive: true, automatic: true, modelBindings: true });
+  assert.equal(f.controller.enabled, true);
+  const images = Array.from({ length: 9 }, (_, i) => ({
+    type: "image",
+    mimeType: "image/png",
+    data: Buffer.from(`fictional-image-${i}`).toString("base64"),
+  }));
+  await f.session.prompt("FINAL_IMAGE_TASK", { images });
+  assert.equal(f.captures.length, 3);
+  const imageCount = (body) =>
+    body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "image_url")
+      .length;
+  assert.deepEqual(
+    f.captures.map((c) => imageCount(c.body)),
+    [8, 1, 0],
+  );
+  assert.match(JSON.stringify(f.captures.at(-1).body), /FINAL_IMAGE_TASK/);
+  assert.doesNotMatch(JSON.stringify(f.captures[0].body), /FINAL_IMAGE_TASK/);
+  const a = f.bindings.currentId();
+  assert.equal(a, f.session.sessionId);
+  await f.session.setModel({ ...f.runtime.getModel("fictional-b", "b"), contextWindow: 32768 });
+  await f.session.prompt("B_FINAL_TASK");
+  const b = f.bindings.currentId();
+  assert.notEqual(a, b);
+  assert.deepEqual(
+    f.captures.slice(3).map((c) => imageCount(c.body)),
+    [8, 1, 0],
+  );
+  await f.session.setModel(f.runtime.getModel("fictional-a", "a"));
+  await f.session.prompt("A_RETURN_TASK");
+  assert.equal(f.bindings.currentId(), a);
+  assert.equal(imageCount(f.captures.at(-1).body), 0);
+  const all = JSON.stringify(f.manager.getEntries());
+  for (const image of images) assert.ok(all.includes(image.data), "raw images retained in cool");
+});
+
+test("automatic large-context warm summarizes text incrementally without per-segment dialogs", async (t) => {
+  const plans = [];
+  const f = await fixture(t, {
+    adaptive: true,
+    automatic: true,
+    oldText: "Earlier useful task evidence. ".repeat(4000),
+    confirm: () => {
+      throw new Error("Automatic policy must not require a manual dialog");
+    },
+    warmRunner:
+      (_runtime, { authorized }) =>
+      async (plan) => {
+        assert.equal(authorized(), true);
+        plans.push(plan);
+        return {
+          answer: JSON.stringify({
+            sourceHash: plan.sourceHash,
+            summary: "Earlier useful decisions remain available; current work is pending.",
+          }),
+        };
+      },
+  });
+  await f.session.prompt("Continue the current work.");
+  assert.ok(plans.length > 1);
+  assert.ok(plans.every((plan) => Buffer.byteLength(plan.payload) <= 64 * 1024));
+  assert.equal(f.captures.length, 1);
+  assert.match(JSON.stringify(f.captures[0].body), /Earlier useful decisions/);
+  assert.doesNotMatch(JSON.stringify(f.captures[0].body), /Earlier useful task evidence/);
+  const entry = f.manager.getEntries().findLast((e) => e.type === "compaction");
+  assert.equal(entry.details.tieredWarm.review, "automatic-summary-not-proven");
+  assert.ok(
+    f.manager
+      .getEntries()
+      .some((e) => e.type === "message" && e.message.content === "Earlier useful task evidence. ".repeat(4000)),
+  );
+});
+
+test("large-context model switch generates warm before the next target request", async (t) => {
+  const plans = [];
+  const f = await fixture(t, {
+    adaptive: true,
+    automatic: true,
+    oldText: "Old evidence. ".repeat(7000),
+    warmRunner: () => async (plan) => {
+      plans.push(plan);
+      return {
+        answer: JSON.stringify({ sourceHash: plan.sourceHash, summary: "Old useful evidence summarized for handoff." }),
+      };
+    },
+  });
+  await f.session.setModel({ ...f.runtime.getModel("fictional-b", "b"), contextWindow: 32768 });
+  assert.ok(plans.length > 0);
+  assert.equal(f.captures.length, 0);
+  assert.ok(f.manager.getEntries().some((e) => e.type === "compaction"));
+});
+
+test("API model session can detach, create a new identity, and rebind its saved original", async (t) => {
+  const f = await fixture(t, { automatic: true, adaptive: true, modelBindings: true });
+  await f.session.prompt("First request");
+  const original = f.bindings.currentId();
+  await f.session.prompt("/model-session unbind");
+  assert.equal(f.bindings.currentId(), undefined);
+  await f.session.prompt("New session request");
+  assert.notEqual(f.bindings.currentId(), original);
+  await f.session.prompt(`/model-session bind ${original}`);
+  assert.equal(f.bindings.currentId(), original);
+  const restored = new ModelSessions();
+  restored.restore(f.manager);
+  assert.equal(restored.currentId(), original);
+  assert.equal(f.captures.length, 2);
 });

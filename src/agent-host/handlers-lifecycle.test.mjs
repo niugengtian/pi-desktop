@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { extractInterfaceProperties } from "../../scripts/check-contract-coverage.mjs";
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
@@ -12,7 +14,7 @@ const stubs = {
   "channels/channel-manager":
     "export class ChannelManager {constructor() {init('channels');} async initialize() {} shutdown() {return step('channels-stop');}}",
   "managed-process/runtime":
-    "export const initializeManagedProcessService = () => {init('processes'); return {stopAll: () => step('processes-stop')};};",
+    "export const peekManagedProcessService = () => undefined; export const initializeManagedProcessService = () => {init('processes'); return {stopAll: () => step('processes-stop')};};",
   "herdr/runtime":
     "export const initializeHerdrBridge = () => {init('herdr'); return {subscribeRuntime: () => () => step('herdr-unsubscribe'), shutdown: () => step('herdr-stop')};}; export const clearHerdrBridge = () => step('herdr-clear');",
   "rpc-manager":
@@ -78,7 +80,12 @@ test("the actual registrar owns one service set and releases subscriptions and s
     emit: (...args) => events.push(args),
   });
   assert.deepEqual(control.state.created, ["files", "auth", "channels", "processes", "herdr"]);
-  assert.equal(Object.keys(methods).length, 118);
+  const contract = extractInterfaceProperties(
+    "api.ts",
+    readFileSync(path.join(hostRoot, "../contract/api.ts"), "utf8"),
+    "Api",
+  );
+  assert.deepEqual(Object.keys(methods).sort(), contract.sort());
   assert.equal(control.state.running.size, 1);
   await methods["agent.command"]({ sessionId: "fixture", command: { type: "get_state" } });
   const running = [...control.state.running][0];

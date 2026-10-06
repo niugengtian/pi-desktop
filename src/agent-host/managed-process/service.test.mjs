@@ -15,12 +15,25 @@ class FakeWorker extends EventEmitter {
   pid = nextPid++;
   stdout = new PassThrough();
   stderr = new PassThrough();
+  sent = [];
   connected = true;
   exitCode = null;
   signalCode = null;
 
   send(message) {
+    this.sent.push(message);
     if (message.type === "bootstrap") {
+      setImmediate(() =>
+        this.emit("message", {
+          type: "prepared",
+          processId: message.processId,
+          runId: message.runId,
+          nonce: message.nonce,
+        }),
+      );
+      return true;
+    }
+    if (message.type === "commit") {
       setImmediate(() => {
         this.emit("message", { type: "started", shellPid: this.pid + 1 });
         this.stdout.write("READY http://127.0.0.1:4173/\n");
@@ -34,6 +47,7 @@ class FakeWorker extends EventEmitter {
     }
     if (message.type === "stop") {
       setImmediate(() => {
+        if (!this.connected) return;
         this.emit("message", { type: "exit", code: 0 });
         this.stdout.end();
         this.stderr.end();
@@ -104,7 +118,7 @@ function waitUntil(predicate, timeoutMs, message) {
   });
 }
 
-function harness() {
+function harness(options = {}) {
   const events = [];
   const parentCalls = [];
   const workers = [];
@@ -128,6 +142,7 @@ function harness() {
         throw new Error(`unexpected parent call: ${method}`);
       },
       fingerprint: async (pid) => `fingerprint-${pid}`,
+      ...options,
     },
   );
   return { service, events, parentCalls, workers };
@@ -600,3 +615,55 @@ test(
     }
   },
 );
+
+test("a stop request cannot mask failed process-group cleanup as killed", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-managed-uncertain-stop-"));
+  const { service } = harness({ terminateProcessGroup: async () => false });
+  const started = await service.startForAgent("uncertain-owner", cwd, true, {
+    command: "fixture",
+    waitFor: { type: "none" },
+  });
+  const stopped = await service.stop(started.process.processId, started.runId, "graceful", "host", "uncertain-owner");
+  assert.equal(stopped.state, "lost");
+  assert.equal(stopped.exit.reason, "host-failure");
+  await assert.rejects(
+    service.settleOwned(started.process.processId, started.runId, "uncertain-owner"),
+    /cleanup is not verified/,
+  );
+});
+
+test("owned settlement waits for crash-recovery acknowledgement and rejects a missing acknowledgement", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-managed-settlement-"));
+  let release, observed;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const unregistering = new Promise((resolve) => {
+    observed = resolve;
+  });
+  const { service } = harness({
+    parentCall: async (method) => {
+      if (method === "managedProcesses.getSettings") return { enabled: true, reaperReady: true };
+      if (method === "managedProcesses.register") return { journalRevision: 1 };
+      if (method === "managedProcesses.unregister") {
+        observed();
+        await gate;
+        throw new Error("Acknowledgement lost");
+      }
+    },
+  });
+  const started = await service.startForAgent("ack-owner", cwd, true, {
+    command: "fixture",
+    waitFor: { type: "none" },
+  });
+  let completed = false;
+  const settling = service.settleOwned(started.process.processId, started.runId, "ack-owner").finally(() => {
+    completed = true;
+  });
+  const rejected = assert.rejects(settling, /cleanup is not verified/);
+  await unregistering;
+  assert.equal(service.get(started.process.processId).state, "killed");
+  assert.equal(completed, false, "a terminal state is not the settlement acknowledgement");
+  release();
+  await rejected;
+});

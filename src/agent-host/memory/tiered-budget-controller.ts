@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   convertToLlm,
   estimateTokens,
@@ -15,7 +16,7 @@ import {
   type BudgetPolicy,
   type BudgetReport,
 } from "./tiered-budget.mjs";
-import { tieredHash, buildTieredSnapshot } from "./tiered-workspace.mjs";
+import { tieredHash, buildTieredSnapshot, pendingNativeSource } from "./tiered-workspace.mjs";
 import {
   WEB_CONTRACT,
   isTieredWebModel,
@@ -24,10 +25,19 @@ import {
   checkWebReceipt,
 } from "./tiered-web.mjs";
 import { planCodexBudget, nativeBudgetView, checkCodexDispatch } from "./tiered-codex-budget.mjs";
-import { buildWarmPlan, validateWarmAnswer, WARM_INSTRUCTIONS, type WarmRecord } from "./tiered-warm.mjs";
+import {
+  buildWarmConsolidation,
+  applyWarmConsolidation,
+  buildWarmPlan,
+  splitWarmPlan,
+  mergeWarmAnswers,
+  validateWarmAnswer,
+  type WarmRecord,
+} from "./tiered-warm.mjs";
 import { WARM_TARGET, type WarmRunnerFactory } from "./tiered-warm-remote.mjs";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
-import { constants, openSync, fstatSync, readFileSync, closeSync } from "node:fs";
+import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
+import { contextSizePlan } from "./context-size.ts";
 
 type SupportedModel = NonNullable<AgentSession["model"]>;
 function refuse(reason: string): never {
@@ -35,13 +45,14 @@ function refuse(reason: string): never {
 }
 const chatOutputLimit = (model: SupportedModel) =>
   model.api === "openai-codex-responses" || isTieredWebModel(model)
-    ? model.maxTokens
+    ? Math.min(model.maxTokens, Math.max(1, Math.floor(model.contextWindow / 4)))
     : Math.min(model.maxTokens, 2048, Math.max(1, Math.floor(model.contextWindow / 4)));
 
 export const supportsTieredModel = (model: SupportedModel) =>
   (model.api === "openai-completions" && ["openai", "deepseek"].includes(model.provider)) ||
   (model.api === "openai-codex-responses" && model.provider === "openai-codex") ||
-  isTieredWebModel(model);
+  isTieredWebModel(model) ||
+  !["opencli-page"].includes(model.api);
 
 /** Experimental, session-only byte-BPE text policy. Native SDK remains the sole compressor. */
 export class TieredBudgetController {
@@ -66,6 +77,8 @@ export class TieredBudgetController {
   private installed = false;
   private readonly promptAdmission = new Map<symbol, boolean>();
   private readonly policy: BudgetPolicy;
+  private readonly adaptive: boolean;
+  private readonly automatic: boolean;
   private readonly supports: (model: SupportedModel) => boolean;
   lastReport?: BudgetReport;
 
@@ -74,19 +87,32 @@ export class TieredBudgetController {
     warmRunner,
     consentVersion = () => 0,
     supports = supportsTieredModel,
+    adaptive = false,
+    automatic = false,
   }: {
     policy?: BudgetPolicy;
     supports?: (model: SupportedModel) => boolean;
+    adaptive?: boolean;
+    automatic?: boolean;
     warmRunner?: WarmRunnerFactory;
     consentVersion?: () => number;
   } = {}) {
     this.policy = Object.freeze({ ...policy });
+    this.adaptive = adaptive;
+    this.automatic = automatic;
     this.supports = supports;
     this.warmRunner = warmRunner;
     this.consentVersion = consentVersion;
   }
   get enabled() {
     return Boolean(this.grant);
+  }
+  private policyFor(model: SupportedModel): BudgetPolicy {
+    if (!this.adaptive) return this.policy;
+    return {
+      ...this.policy,
+      hotMax: Math.max(this.policy.hotTarget, model.contextWindow - chatOutputLimit(model) - this.policy.safety),
+    };
   }
   private supported(model: SupportedModel): boolean {
     const runtime = this.session?.modelRuntime;
@@ -114,27 +140,45 @@ export class TieredBudgetController {
     const manager = this.session?.sessionManager;
     const path = manager?.getSessionFile();
     if (!manager || !path) refuse("native-source-not-flushed");
+    const pending = pendingNativeSource(manager);
+    if (pending) return tieredHash(pending);
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024) refuse("native-source-file-limit");
-      const bytes = readFileSync(fd);
-      let entries: unknown[];
-      try {
-        entries = bytes
-          .toString("utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-      } catch {
-        refuse("native-source-invalid-jsonl");
+      if (!stat.isFile() || stat.nlink !== 1) refuse("native-source-file-limit");
+      const digest = createHash("sha256");
+      const expected = manager.getEntries();
+      let index = -1;
+      let carry = "";
+      const checkLine = (line: string) => {
+        if (!line.trim()) return;
+        let entry;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          refuse("native-source-invalid-jsonl");
+        }
+        if (
+          index === -1 ? entry.id !== manager.getSessionId() : JSON.stringify(entry) !== JSON.stringify(expected[index])
+        )
+          refuse("native-source-not-consistent");
+        index++;
+      };
+      const buffer = Buffer.alloc(64 * 1024);
+      // JSONL is UTF-8; decoder preserves multibyte characters spanning chunks.
+      const decoder = new TextDecoder();
+      for (let length; (length = readSync(fd, buffer, 0, buffer.length, null)) > 0;) {
+        const chunk = buffer.subarray(0, length);
+        digest.update(chunk);
+        carry += decoder.decode(chunk, { stream: true });
+        const lines = carry.split("\n");
+        carry = lines.pop()!;
+        for (const line of lines) checkLine(line);
       }
-      if (
-        (entries[0] as { id?: string })?.id !== manager.getSessionId() ||
-        JSON.stringify(entries.slice(1)) !== JSON.stringify(manager.getEntries())
-      )
-        refuse("native-source-not-consistent");
-      return tieredHash(bytes);
+      carry += decoder.decode();
+      checkLine(carry);
+      if (index !== expected.length || fstatSync(fd).mtimeMs !== stat.mtimeMs) refuse("native-source-not-consistent");
+      return digest.digest("hex");
     } finally {
       closeSync(fd);
     }
@@ -155,11 +199,19 @@ export class TieredBudgetController {
             if (!this.enabled || !this.session || !model) return base;
             if (!this.supported(model) || [...this.promptAdmission.values()].some((fits) => !fits))
               return { ...base, enabled: false };
+            if (
+              this.adaptive &&
+              contextSizePlan(this.session.sessionManager.buildSessionProjection().messages, {
+                ...model,
+                maxTokens: chatOutputLimit(model),
+              }).mode !== "warm"
+            )
+              return { ...base, enabled: false };
             const hints = nativeBudgetHints(
               this.session.sessionManager.buildSessionProjection().messages,
               { ...model, maxTokens: chatOutputLimit(model) },
               estimateTokens,
-              this.policy,
+              this.policyFor(model),
             );
             return {
               ...base,
@@ -193,8 +245,7 @@ export class TieredBudgetController {
       const ticket = Symbol("prompt-admission");
       this.promptAdmission.set(
         ticket,
-        !options?.images?.length &&
-          estimateEnvelope([{ role: "user", content: text }], 1).estimatedTokens <= this.policy.hotMax &&
+        estimateEnvelope([{ role: "user", content: text }], 1).estimatedTokens <= this.policyFor(model).hotMax &&
           standalone + chatOutputLimit(model) + this.policy.safety <= model.contextWindow,
       );
       // Suppress pre-prompt summary requests for obviously non-fitting incoming input,
@@ -236,20 +287,47 @@ export class TieredBudgetController {
     const original = session.agent.streamFunction;
     session.agent.streamFunction = async (model, context, options) => {
       const grant = this.grant;
-      if (!grant) return original(model, context, options);
+      const providerOptions = {
+        ...options,
+        sessionId:
+          (options as typeof options & { desktopModelSessionId?: string })?.desktopModelSessionId ?? options?.sessionId,
+      };
+      if (!grant) return original(model, context, providerOptions);
       const generation = this.generation;
-      if (grant.sessionId !== session.sessionId || !this.supported(model))
-        refuse("unsupported-or-replaced-session-model");
+      if (grant.sessionId !== session.sessionId) refuse("unsupported-or-replaced-session-model");
+      if (!this.supported(model)) return original(model, context, providerOptions);
       this.sourceFingerprint();
       if (isTieredWebModel(model)) {
         if (this.compacting || options?.sessionId !== session.sessionId) refuse("web-auxiliary-operation");
         const snapshot = buildTieredSnapshot(session.sessionManager);
         if (
-          tieredHash(JSON.stringify(context.messages)) !==
-          tieredHash(JSON.stringify(convertToLlm(session.sessionManager.buildSessionProjection().messages)))
+          tieredHash(JSON.stringify(context.messages.filter((message) => message.role !== "system"))) !==
+          tieredHash(
+            JSON.stringify(
+              convertToLlm(session.sessionManager.buildSessionProjection().messages).filter(
+                (message) => message.role !== "system",
+              ),
+            ),
+          )
         )
           refuse("web-context-not-native-projection");
-        const plan = buildTieredWebPlan(snapshot, model, this.policy);
+        let conversationId: string | undefined;
+        for (const entry of session.sessionManager.getBranch()) {
+          if (entry.type !== "custom") continue;
+          const data = entry.data as { modelId?: string; remote?: { conversationId?: string } };
+          if (data?.modelId !== model.id) continue;
+          if (entry.customType === "page-provider-binding-reset") conversationId = undefined;
+          else if (["page-provider-binding", "page-provider-binding-provisional"].includes(entry.customType))
+            conversationId = data.remote?.conversationId;
+        }
+        const extra = options as typeof options & {
+          pageImages?: Array<{ type: string; data: string; mimeType: string }>;
+        };
+        const plan = buildTieredWebPlan(snapshot, model, this.policyFor(model), {
+          images: extra?.pageImages,
+          conversationId,
+          systemPrompt: getCurrentSystemPrompt(context.messages),
+        });
         this.lastWebReport = plan.report;
         const initialEntries = structuredClone(session.sessionManager.getEntries());
         let dispatchId: string | undefined;
@@ -298,10 +376,12 @@ export class TieredBudgetController {
             refuse("web-permission-or-source-invalidated");
         };
         valid();
-        const approved = await grant.ui.confirm(
-          "Approve this ONE complete Web context?",
-          `Target: ${model.provider}/${model.id}; site ${plan.payload.site}; mode ${plan.payload.mode}.\nFresh remote conversation for this full context; old website conversations are NOT deleted. No retry/fallback. Website window/output/usage are unmeasured; catalog estimates do not enforce a browser output cap.\nNative source ${plan.payload.sourceHash}; warm ${plan.warmVersion ?? "none"}; ${plan.hotSourceEntryIds.length} complete visible hot messages. ${plan.omittedThinking} reasoning blocks/signatures remain local. System/tool declarations, cold and human agents.md remain local. No redaction of visible task/tool evidence; approve only if this whole text may leave for this website. Flash/workspace/budget permissions do NOT approve this dispatch.\nFULL FINAL TEXT (not truncated):\n${plan.payload.text}`,
-        );
+        const approved =
+          this.automatic ||
+          (await grant.ui.confirm(
+            "Approve this ONE complete Web context?",
+            `Target: ${model.provider}/${model.id}; site ${plan.payload.site}; mode ${plan.payload.mode}.\nFresh remote conversation for this full context; old website conversations are NOT deleted. No retry/fallback. Website window/output/usage are unmeasured; catalog estimates do not enforce a browser output cap.\nNative source ${plan.payload.sourceHash}; warm ${plan.warmVersion ?? "none"}; ${plan.hotSourceEntryIds.length} complete visible hot messages. ${plan.omittedThinking} reasoning blocks/signatures remain local. System/tool declarations, cold and human agents.md remain local. No redaction of visible task/tool evidence; approve only if this whole text may leave for this website. Flash/workspace/budget permissions do NOT approve this dispatch.\nFULL FINAL TEXT (not truncated):\n${plan.payload.text}`,
+          ));
         if (!approved) refuse("web-source-not-approved");
         valid();
         const controller = new AbortController();
@@ -362,7 +442,7 @@ export class TieredBudgetController {
       if (operation === "chat" && options?.sessionId !== session.sessionId) refuse("auxiliary-operation-not-supported");
       const outputReserved =
         model.api === "openai-codex-responses"
-          ? model.maxTokens
+          ? chatOutputLimit(model)
           : operation === "chat"
             ? chatOutputLimit(model)
             : Math.min(model.maxTokens, this.policy.warmTarget);
@@ -381,6 +461,8 @@ export class TieredBudgetController {
       const warmText = warmMessage ? wireText(convertToLlm([warmMessage])[0]) : undefined;
       return original(model, context, {
         ...options,
+        sessionId:
+          (options as typeof options & { desktopModelSessionId?: string })?.desktopModelSessionId ?? options?.sessionId,
         // Native summary stays on its selected model, never an implicit Flash/fallback request.
         maxTokens: outputReserved,
         ...(model.api === "openai-codex-responses"
@@ -415,8 +497,9 @@ export class TieredBudgetController {
           // Detach accessors/toJSON/live references before validation and provider serialization.
           const finalPayload = JSON.parse(JSON.stringify(transformed ?? payload)) as Record<string, unknown>;
           const output = finalPayload.max_tokens ?? finalPayload.max_completion_tokens;
-          if (model.api !== "openai-codex-responses" && (typeof output !== "number" || output > outputReserved))
+          if (model.api === "openai-completions" && (typeof output !== "number" || output > outputReserved))
             refuse("output-reservation-mutated");
+          if (!["openai-completions", "openai-codex-responses"].includes(model.api)) return finalPayload;
           // No throwing extension hook here: this callback is the SDK provider's final pre-fetch callback.
           const report =
             model.api === "openai-codex-responses"
@@ -424,9 +507,10 @@ export class TieredBudgetController {
                   nativeMessages: context.messages,
                   warmText,
                   operation,
-                  policy: this.policy,
+                  policy: this.policyFor(model),
+                  outputReservation: outputReserved,
                 })
-              : planWireBudget(finalPayload, actualModel, { warmText, operation, policy: this.policy });
+              : planWireBudget(finalPayload, actualModel, { warmText, operation, policy: this.policyFor(model) });
           this.lastReport = report; // Numeric/algorithm metadata only, no history/payload/headers.
           if (report.action !== "allow") refuse(report.reasons.join(","));
           if (model.api === "openai-codex-responses") approvedCodexPayload = JSON.stringify(finalPayload);
@@ -481,7 +565,9 @@ export class TieredBudgetController {
               "Enable experimental session budget?",
               [
                 "No request is sent by enabling. API requests retain native system/tools + one native warm summary + full hot messages. Updated Web targets separately review/export one warm + all visible hot into a fresh conversation; system/tools/cold/reasoning remain local.",
-                `Text-only conservative ESTIMATE, not exact token counting: hot target ${this.policy.hotTarget}/max ${this.policy.hotMax}; warm target ${this.policy.warmTarget}/max ${this.policy.warmMax}.`,
+                this.adaptive
+                  ? "Adaptive routing: small native history up to approximately 4000 tokens; medium complete hot context up to approximately 16000; only larger history or 85% of conservative target capacity triggers warm. Thresholds shrink to 10%/35% of available target capacity. No extra summary request for small/medium history. SDK estimates are NOT exact token counts; final serialized capacity checks still apply."
+                  : `Text-only conservative ESTIMATE, not exact token counting: hot target ${this.policy.hotTarget}/max ${this.policy.hotMax}; warm target ${this.policy.warmTarget}/max ${this.policy.warmMax}.`,
                 "Byte-BPE JSON envelope/framing may refuse much earlier than a tokenizer; provider framing is not officially calibrated. Images/unmeasured opaque thinking/other APIs are unsupported. Codex replay reserves provider-reported output+reasoning per opaque item, never base64 bytes as tokens; this is an assumption, not a certified tokenizer.",
                 "SDK remains the only compaction owner. Default warm processor is DeepSeek Flash with thinking disabled, NOT the main chat model. This budget approval does NOT authorize Flash or Web: each Flash delta requires complete source approval and final candidate review. Missing processor/cancel/failure never falls back to the main model. /tiered-warm-native is an explicit session-only alternative; navigation/restart restores the Flash selection without restoring any permission.",
                 "System/tool schemas and safety reduce API history; Completions output is capped at min(model maximum, 2048, quarter window). Codex reserves the FULL catalog maximum without an enforced cap, uses SSE and no WebSocket fallback/retries. Web website window/output cap/usage are unmeasured: catalog reservation is only a hint, zero SDK usage is a placeholder. Complete visible Web text must fit estimates and transport bounds; no silent cut or legacy handoff fallback.",
@@ -518,6 +604,13 @@ export class TieredBudgetController {
               ctx,
               JSON.stringify({
                 enabled: this.enabled,
+                contextSize:
+                  this.adaptive && this.session?.model
+                    ? contextSizePlan(this.session.sessionManager.buildSessionProjection().messages, {
+                        ...this.session.model,
+                        maxTokens: chatOutputLimit(this.session.model),
+                      })
+                    : null,
                 compactionPaused: this.compactionPaused,
                 warmProcessor: this.warmMode ? "flash-per-attempt-review" : "native",
                 lastReport: this.lastReport ?? null,
@@ -604,26 +697,65 @@ export class TieredBudgetController {
                 }
               };
               const plan = buildWarmPlan(ctx.sessionManager, event.preparation);
-              if (event.preparation.previousSummary) {
-                const prior = convertToLlm([
+              const segments = splitWarmPlan(plan);
+              const answers: string[] = [];
+              let warmUsage;
+              for (const segment of segments) {
+                const approved =
+                  this.automatic ||
+                  (await ctx.ui.confirm(
+                    "Approve this ONE incremental Flash payload?",
+                    `Segment ${segment.segment?.index ?? 1}/${segments.length}; at most 64 KiB per request. Only this incremental source is sent. Native context advances only after all segments pass final review.\nTarget: ${WARM_TARGET}\nMode: ${plan.schema}. Flash paraphrases useful decisions, results and pending work, and drops chatter/repetition. No exhaustive record or number coverage is required. All source stays in native cold history.\nOutput cap ≤4096 for long source, ≤2048 otherwise; thinking disabled; no tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS, not a local-only service.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. Reasoning/signatures are NOT sent: only visible task text/tool evidence is organized; reasoning stays in native cold history and leaves active replay after approved compaction. No tools executed by Flash. Source permission expires with this attempt.\nSYSTEM:\n${segment.instructions}\nUSER:\n${segment.payload}`,
+                  ));
+                if (!approved || !authorized()) return { cancel: true };
+                const reply = await this.warmRunner({ signal: event.signal, authorized })(segment);
+                if (!authorized()) return { cancel: true };
+                validateWarmAnswer(segment, reply.answer);
+                answers.push(reply.answer);
+                if (reply.usage) {
+                  if (!warmUsage) warmUsage = structuredClone(reply.usage);
+                  else {
+                    for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const)
+                      warmUsage[key] += reply.usage[key];
+                    for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const)
+                      warmUsage.cost[key] += reply.usage.cost[key];
+                  }
+                }
+              }
+              let candidate = mergeWarmAnswers(plan, segments, answers);
+              const candidateSize = () => {
+                const messages = convertToLlm([
                   {
                     role: "compactionSummary",
-                    summary: event.preparation.previousSummary,
-                    tokensBefore: 0,
+                    summary: candidate.summary,
+                    tokensBefore: candidate.tokensBefore,
                     timestamp: 0,
                   },
                 ]);
-                if (estimateEnvelope(prior, prior.length).estimatedTokens >= this.policy.warmMax)
-                  return { cancel: true };
+                return estimateEnvelope(messages, messages.length).estimatedTokens;
+              };
+              if (candidateSize() > this.policy.warmMax) {
+                const consolidation = buildWarmConsolidation(plan, candidate);
+                const approved =
+                  this.automatic ||
+                  (await ctx.ui.confirm(
+                    "合并增量摘要",
+                    `摘要需要进一步去重才能放入 warm。此次仅发送下方已有摘要，不重新读取完整 JSONL。\n${consolidation.payload}`,
+                  ));
+                if (!approved || !authorized()) return { cancel: true };
+                const reply = await this.warmRunner({ signal: event.signal, authorized })(consolidation);
+                if (!authorized()) return { cancel: true };
+                candidate = applyWarmConsolidation(plan, candidate, consolidation, reply.answer);
+                if (reply.usage) {
+                  if (!warmUsage) warmUsage = structuredClone(reply.usage);
+                  else {
+                    for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const)
+                      warmUsage[key] += reply.usage[key];
+                    for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const)
+                      warmUsage.cost[key] += reply.usage.cost[key];
+                  }
+                }
               }
-              const approved = await ctx.ui.confirm(
-                "Approve this ONE incremental Flash payload?",
-                `Target: ${WARM_TARGET}\nOutput cap ≤2048; thinking disabled; no tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS, not a local-only service.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. Reasoning/signatures are NOT sent: only visible task text/tool evidence is organized; reasoning stays in native cold history and leaves active replay after approved compaction. No tools executed by Flash. Source permission expires with this attempt.\nSYSTEM:\n${WARM_INSTRUCTIONS}\nUSER:\n${plan.payload}`,
-              );
-              if (!approved || !authorized()) return { cancel: true };
-              const reply = await this.warmRunner({ signal: event.signal, authorized })(plan);
-              if (!authorized()) return { cancel: true };
-              const candidate = validateWarmAnswer(plan, reply.answer);
               const warm = convertToLlm([
                 {
                   role: "compactionSummary",
@@ -633,18 +765,22 @@ export class TieredBudgetController {
                 },
               ]);
               if (estimateEnvelope(warm, warm.length).estimatedTokens > this.policy.warmMax) return { cancel: true };
-              const reviewed = await ctx.ui.confirm(
-                "Review omissions BEFORE warm replaces context",
-                `Quotes/citations and numeric/name anchors are structurally checked, NOT semantically lossless. Confirm all necessary facts/constraints/order/status are retained; otherwise reject and keep original hot. Only native append changes the active context.\nCANDIDATE:\n${candidate.summary}\nSOURCE:\n${plan.payload}`,
-              );
+              const reviewed =
+                this.automatic ||
+                (await ctx.ui.confirm(
+                  "Review warm summary before context update",
+                  `Flash may paraphrase and omit irrelevant or repeated content. Check that useful decisions, results and pending work are correct. Structural validation does not establish semantic accuracy. Original JSONL is retained.\nCANDIDATE:\n${candidate.summary}\nSOURCE:\n${plan.payload}`,
+                ));
               if (!reviewed || !authorized()) return { cancel: true };
-              (candidate.details as { tieredWarm: WarmRecord }).tieredWarm.review = "human-approved-not-proven";
+              (candidate.details as { tieredWarm: WarmRecord }).tieredWarm.review = this.automatic
+                ? "automatic-summary-not-proven"
+                : "human-approved-not-proven";
               this.warmCandidate = {
                 consentVersion,
                 summaryHash: tieredHash(candidate.summary),
                 detailsHash: tieredHash(JSON.stringify(candidate.details)),
               };
-              return { compaction: { ...candidate, usage: reply.usage } };
+              return { compaction: { ...candidate, usage: warmUsage } };
             }
           } catch {
             notify(
@@ -674,12 +810,32 @@ export class TieredBudgetController {
             );
           }
         });
-        pi.on("model_select", () => {
+        pi.on("model_select", async (_event, ctx) => {
           this.generation++;
           this.webAbort?.abort();
           if (this.enabled) this.session?.abortCompaction();
+          if (
+            this.automatic &&
+            this.enabled &&
+            this.session?.model &&
+            ctx.isIdle() &&
+            contextSizePlan(this.session.sessionManager.buildSessionProjection().messages, {
+              ...this.session.model,
+              maxTokens: chatOutputLimit(this.session.model),
+            }).mode === "warm"
+          ) {
+            try {
+              await this.session.compact();
+            } catch {
+              notify(ctx, "Model handoff summary failed; original context retained. Retry with /compact.", "warning");
+            }
+          }
         });
-        pi.on("session_start", () => this.disable());
+        pi.on("session_start", (_event, ctx) => {
+          this.disable();
+          if (this.automatic)
+            this.grant = { manager: ctx.sessionManager, sessionId: ctx.sessionManager.getSessionId(), ui: ctx.ui };
+        });
         pi.on("session_before_switch", () => this.disable());
         pi.on("session_before_tree", () => this.disable());
         pi.on("session_before_fork", () => this.disable());

@@ -43,22 +43,30 @@ type PageProviderApi = {
 
 const bundledBridge = fileURLToPath(new URL("../bridge/opencli-bridge.mjs", import.meta.url));
 
-function nodeExecutable() {
-  const configured = String(process.env.PI_PAGE_PROVIDER_NODE ?? "").trim();
-  if (configured) return configured;
-  if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) return process.execPath;
+function bridgeLaunch() {
+  const override = String(process.env.PI_PAGE_PROVIDER_BRIDGE ?? "").trim();
+  if (override) return { command: override, args: ["--stdio"] };
+
+  const configuredNode = String(process.env.PI_PAGE_PROVIDER_NODE ?? "").trim();
+  if (configuredNode) return { command: configuredNode, args: [bundledBridge, "--stdio"] };
+  if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) {
+    return { command: process.execPath, args: [bundledBridge, "--stdio"] };
+  }
   const candidates = [
     join(homedir(), ".hermes", "node", "bin", "node"),
     "/opt/homebrew/bin/node",
     "/usr/local/bin/node",
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? "node";
-}
-
-function bridgeLaunch() {
-  const override = String(process.env.PI_PAGE_PROVIDER_BRIDGE ?? "").trim();
-  if (override) return { command: override, args: ["--stdio"] };
-  return { command: nodeExecutable(), args: [bundledBridge, "--stdio"] };
+  const node = candidates.find((candidate) => existsSync(candidate));
+  if (node) return { command: node, args: [bundledBridge, "--stdio"] };
+  if (process.versions.electron) {
+    return {
+      command: process.execPath,
+      args: [bundledBridge, "--stdio"],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
+  return { command: "node", args: [bundledBridge, "--stdio"] };
 }
 
 export default function registerPageProvider(pi: PageProviderApi) {

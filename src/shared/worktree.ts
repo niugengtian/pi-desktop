@@ -107,6 +107,16 @@ async function gitRaw(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+/** Task workspace snapshots use the same resolved Git runtime as ordinary worktrees. */
+export async function runWorkspaceGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+  const result = await gitCommandRunner.run(cwd, args, {
+    timeout: 30_000,
+    maxBuffer: 20 * 1024 * 1024,
+    env: { ...process.env, LC_ALL: "C", ...env },
+  });
+  return result.stdout;
+}
+
 /** List repository files through the configured Git runtime. */
 export async function listGitFiles(cwd: string): Promise<string[]> {
   const stdout = await gitRaw(cwd, ["ls-files", "--cached", "--others", "--exclude-standard"]);

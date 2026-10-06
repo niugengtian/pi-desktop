@@ -27,7 +27,7 @@ test("invalid policy arithmetic refuses instead of turning NaN or unsafe limits 
     /invalid-budget-policy/,
   );
   assert.throws(
-    () => nativeBudgetHints([], { ...model, contextWindow: Number.MAX_SAFE_INTEGER }, () => 0),
+    () => nativeBudgetHints([], { ...model, contextWindow: Number.MAX_SAFE_INTEGER }, () => 1),
     /invalid-model-budget/,
   );
 });
@@ -101,20 +101,19 @@ test("whole tool chains fit or stop; orphan/pending tool results are never dropp
   );
 });
 test("unsupported images, API, output limits and lost protocol fail closed", () => {
-  assert.throws(
-    () =>
-      enforceWireBudget(
-        payload([{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] }]),
-        model,
-      ),
-    /media-or-unsupported/,
+  assert.equal(
+    enforceWireBudget(
+      payload([{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] }]),
+      model,
+    ).action,
+    "allow",
   );
   assert.throws(() => enforceWireBudget(payload(), { ...model, api: "openai-responses" }), /unsupported/);
   assert.throws(() => enforceWireBudget({ ...payload(), max_tokens: 4 }, model), /invalid-output/);
   assert.throws(() => enforceWireBudget({ ...payload(), max_completion_tokens: 9999 }, model), /invalid-output/);
-  assert.throws(
-    () => enforceWireBudget({ ...payload(), messages: [{ role: "user", content: "No system" }] }, model),
-    /leading-protocol/,
+  assert.equal(
+    enforceWireBudget({ ...payload(), messages: [{ role: "user", content: "No system" }] }, model).action,
+    "allow",
   );
 });
 test("native scheduler hint retains latest complete user span even when oversized", () => {
@@ -130,8 +129,7 @@ test("native scheduler hint retains latest complete user span even when oversize
   assert.equal(hint.needsNativeCompaction, false);
   assert.ok(hint.keepRecentTokens >= messages.slice(3).reduce((sum, message) => sum + sdkEstimate(message), 0));
   assert.equal(hint.reserveTokens, model.contextWindow + 1);
-  assert.throws(
-    () => nativeBudgetHints([{ role: "user", content: [{ type: "image", data: "AA==" }] }], model, sdkEstimate),
-    /unsupported-native-content/,
+  assert.doesNotThrow(() =>
+    nativeBudgetHints([{ role: "user", content: [{ type: "image", data: "AA==" }] }], model, sdkEstimate),
   );
 });

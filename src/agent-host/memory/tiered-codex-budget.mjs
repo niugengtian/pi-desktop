@@ -1,3 +1,4 @@
+import { isImageBlock, validateImage, textBudgetValue } from "./tiered-images.mjs";
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 import { planWireBudget, estimateEnvelope } from "./tiered-budget.mjs";
@@ -27,9 +28,9 @@ export function checkCodexDispatch(url, body, model, expectedPayload) {
   if (typeof body === "string") bytes = Buffer.from(body);
   else if (body instanceof Uint8Array) bytes = Buffer.from(body);
   else refuse();
-  if (bytes.length > 8 * 1024 * 1024) refuse();
+  if (bytes.length > 128 * 1024 * 1024) refuse();
   if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd])))
-    bytes = zstdDecompressSync(bytes, { maxOutputLength: 8 * 1024 * 1024 });
+    bytes = zstdDecompressSync(bytes, { maxOutputLength: 128 * 1024 * 1024 });
   if (bytes.toString("utf8") !== expectedPayload) refuse();
 }
 /** Opaque bytes are NOT tokenized. Reserve provider-reported output + reasoning per replay item. */
@@ -40,53 +41,93 @@ export function nativeBudgetView(messages) {
     if (!Array.isArray(message.content)) return message;
     return {
       ...message,
-      content: message.content.map((block) => {
-        if (!block.thinkingSignature) return block;
-        if (
-          message.role !== "assistant" ||
-          message.api !== "openai-codex-responses" ||
-          block.type !== "thinking" ||
-          block.redacted
-        )
-          refuse();
-        let item;
-        try {
-          item = JSON.parse(block.thinkingSignature);
-        } catch {
-          refuse();
-        }
-        const output = message.usage?.output;
-        const reasoning = message.usage?.reasoning ?? 0;
-        if (
-          item?.type !== "reasoning" ||
-          typeof item.id !== "string" ||
-          !item.id ||
-          !Number.isSafeInteger(output) ||
-          output <= 0 ||
-          !Number.isSafeInteger(reasoning) ||
-          reasoning < 0
-        )
-          refuse();
-        const reserved = output + reasoning;
-        if (!Number.isSafeInteger(reserved) || opaque.has(hash(item))) refuse();
-        opaque.set(hash(item), reserved);
-        opaqueReserved += reserved;
-        if (!Number.isSafeInteger(opaqueReserved)) refuse();
-        return { type: "thinking", thinking: block.thinking ?? "", opaqueReplayReserved: reserved };
-      }),
+      content: message.content
+        .filter((block) => {
+          if (isImageBlock(block)) {
+            validateImage(block);
+            return false;
+          }
+          return true;
+        })
+        .map((block) => {
+          if (!block.thinkingSignature) return block;
+          // Native providers own their signed reasoning format. Inspect visible
+          // text and reserve reported output, while leaving the real block intact
+          // for the SDK's provider conversion; Codex replay has stricter checks below.
+          if (
+            message.role === "assistant" &&
+            block.type === "thinking" &&
+            !["openai-completions", "openai-codex-responses"].includes(message.api)
+          ) {
+            const reported = (message.usage?.output ?? 0) + (message.usage?.reasoning ?? 0);
+            const reserved =
+              Number.isSafeInteger(reported) && reported > 0
+                ? reported
+                : Buffer.byteLength(String(block.thinkingSignature), "utf8");
+            opaqueReserved += reserved;
+            if (!Number.isSafeInteger(opaqueReserved)) refuse();
+            return { type: "thinking", thinking: block.thinking ?? "", opaqueReplayReserved: reserved };
+          }
+          // Completions uses these literal field names for visible reasoning, not
+          // encrypted replay. Keep all text in the estimate; the SDK alone owns
+          // cross-provider serialization. Unknown signatures still fail closed.
+          if (
+            message.role === "assistant" &&
+            message.api === "openai-completions" &&
+            block.type === "thinking" &&
+            !block.redacted &&
+            typeof block.thinking === "string" &&
+            ["reasoning", "reasoning_content", "reasoning_text"].includes(block.thinkingSignature)
+          )
+            return { type: "thinking", thinking: block.thinking };
+          if (
+            message.role !== "assistant" ||
+            message.api !== "openai-codex-responses" ||
+            block.type !== "thinking" ||
+            block.redacted
+          )
+            refuse();
+          let item;
+          try {
+            item = JSON.parse(block.thinkingSignature);
+          } catch {
+            refuse();
+          }
+          const output = message.usage?.output;
+          const reasoning = message.usage?.reasoning ?? 0;
+          if (
+            item?.type !== "reasoning" ||
+            typeof item.id !== "string" ||
+            !item.id ||
+            !Number.isSafeInteger(output) ||
+            output <= 0 ||
+            !Number.isSafeInteger(reasoning) ||
+            reasoning < 0
+          )
+            refuse();
+          const reserved = output + reasoning;
+          if (!Number.isSafeInteger(reserved) || opaque.has(hash(item))) refuse();
+          opaque.set(hash(item), reserved);
+          opaqueReserved += reserved;
+          if (!Number.isSafeInteger(opaqueReserved)) refuse();
+          return { type: "thinking", thinking: block.thinking ?? "", opaqueReplayReserved: reserved };
+        }),
     };
   });
   return { messages: safe, opaque, opaqueReserved };
 }
 /** Inspection only: never return this synthetic Completions view to the provider. */
-export function planCodexBudget(payload, model, { nativeMessages = [], warmText, operation = "chat", policy } = {}) {
+export function planCodexBudget(
+  payload,
+  model,
+  { nativeMessages = [], warmText, operation = "chat", policy, outputReservation = model.maxTokens } = {},
+) {
   if (
     model.api !== "openai-codex-responses" ||
     payload?.model !== model.id ||
     payload.store !== false ||
     payload.stream !== true ||
     typeof payload.instructions !== "string" ||
-    !payload.instructions.trim() ||
     !Array.isArray(payload.input) ||
     !Number.isSafeInteger(model.maxTokens) ||
     model.maxTokens <= 0
@@ -130,6 +171,10 @@ export function planCodexBudget(payload, model, { nativeMessages = [], warmText,
     if (!Array.isArray(content)) refuse();
     return content
       .map((part) => {
+        if (isImageBlock(part)) {
+          validateImage(part);
+          return "";
+        }
         if (!["input_text", "output_text", "text"].includes(part.type) || typeof part.text !== "string") refuse();
         return part.text;
       })
@@ -165,17 +210,19 @@ export function planCodexBudget(payload, model, { nativeMessages = [], warmText,
       if (!["user", "assistant", "system", "developer"].includes(item.role)) refuse();
       messages.push({ role: item.role, content: text(item.content) });
     } else refuse();
-    return item;
+    return textBudgetValue(item);
   });
-  // Codex adapter does NOT send an output cap. Reserve FULL model catalog maximum;
-  // do not inject a backend-unsupported field or claim options.maxTokens capped it.
+  // This is a planning reserve, not a server output cap. In particular, a
+  // catalog maximum equal to the entire window must not block every native turn.
+  if (!Number.isSafeInteger(outputReservation) || outputReservation <= 0 || outputReservation > model.maxTokens)
+    refuse();
   const report = planWireBudget(
-    { model: model.id, messages, tools: payload.tools, max_tokens: model.maxTokens },
+    { model: model.id, messages, tools: payload.tools, max_tokens: outputReservation },
     { ...model, api: "openai-completions" },
     { warmText, operation, policy },
   );
   const wireBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
-  if (wireBytes > 8 * 1024 * 1024) refuse();
+
   const measured = estimateEnvelope(
     { ...payload, input: sanitizedInput },
     payload.input.length,
@@ -197,7 +244,8 @@ export function planCodexBudget(payload, model, { nativeMessages = [], warmText,
     report.reasons.push("hot-envelope-limit");
   report.model = `${model.provider}/${model.id}`;
   report.api = model.api;
-  report.outputPolicy = "catalog-maximum-reserved-no-wire-cap";
+  report.outputPolicy =
+    outputReservation === model.maxTokens ? "catalog-maximum-reserved-no-wire-cap" : "planning-reservation-no-wire-cap";
   if (
     report.totalEstimate.estimatedTokens > report.inputAllowance &&
     !report.reasons.includes("input-window-reservation")

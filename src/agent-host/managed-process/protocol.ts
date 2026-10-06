@@ -3,6 +3,8 @@ import type { ManagedProcessStopMode } from "../../contract/processes.ts";
 
 export interface ManagedProcessWorkerBootstrap {
   type: "bootstrap";
+  protocol: 2;
+  nonce: string;
   processId: string;
   runId: string;
   cwd: string;
@@ -12,10 +14,12 @@ export interface ManagedProcessWorkerBootstrap {
 
 export type ManagedProcessWorkerRequest =
   | ManagedProcessWorkerBootstrap
+  | { type: "commit"; processId: string; runId: string; nonce: string; journalRevision: number }
   | { type: "stdin"; text: string; appendNewline: boolean; close: boolean }
   | { type: "stop"; mode: ManagedProcessStopMode; source: "agent" | "user" | "host" | "main" };
 
 export type ManagedProcessWorkerEvent =
+  | { type: "prepared"; processId: string; runId: string; nonce: string }
   | { type: "started"; shellPid: number }
   | { type: "stdin-closed" }
   | { type: "stopping"; phase: "interrupt" | "terminate" | "force" }

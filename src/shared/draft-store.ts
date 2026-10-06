@@ -70,19 +70,10 @@ export function selectDraftImageAdditions<T extends ChatDraftImage>(
 ): DraftImageAdditionSelection<T> {
   const accepted: T[] = [];
   const rejected: Array<{ image: T; reason: DraftImageRejectionReason }> = [];
-  let totalBytes = existing.reduce((total, image) => total + decodedBase64ByteLength(image.data), 0);
   for (const image of candidates) {
-    if (existing.length + accepted.length >= MAX_PERSISTED_DRAFT_IMAGES) {
-      rejected.push({ image, reason: "count" });
-      continue;
-    }
-    const nextBytes = totalBytes + decodedBase64ByteLength(image.data);
-    if (nextBytes > MAX_PERSISTED_DRAFT_IMAGE_BYTES) {
+    if (decodedBase64ByteLength(image.data) > 10 * 1024 * 1024) {
       rejected.push({ image, reason: "bytes" });
-      continue;
-    }
-    accepted.push(image);
-    totalBytes = nextBytes;
+    } else accepted.push(image);
   }
   return { accepted, rejected };
 }

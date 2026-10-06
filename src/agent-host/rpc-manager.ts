@@ -1,15 +1,12 @@
 import {
   createAgentSessionFromServices,
-  createAgentSessionServices,
   createBashToolDefinition,
   getAgentDir,
-  ModelRuntime,
   SessionManager,
   type CreateAgentSessionFromServicesOptions,
   type AgentSessionRuntimeDiagnostic,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
-import { appendFileSync } from "node:fs";
 import { EXCLUDED_PI_TOOLS, filterDesktopToolNames, validateDesktopToolNames } from "../shared/pi-tool-policy.ts";
 import { assertSessionWritable } from "./session-readonly.ts";
 import { resolveSessionModel } from "./session-model.ts";
@@ -44,14 +41,11 @@ import { createSharedTerminalToolDefinitions } from "./shared-terminal/tools";
 import { peekHerdrBridge } from "./herdr/runtime";
 import { createHerdrToolDefinitions, herdrToolNamesForRuntime, isHerdrToolName } from "./herdr/tools";
 import { installHerdrSessionRedaction } from "./herdr/session-redaction";
-import { createDesktopPromptExtension, SessionPromptPolicy } from "./session-prompt-policy";
-import { createTaskMemoryExtension } from "./memory/extension";
-import { createTieredWorkspaceExtension } from "./memory/tiered-extension";
-import { TieredBudgetController, supportsTieredModel } from "./memory/tiered-budget-controller";
-import { createFlashWarmRunner } from "./memory/tiered-warm-remote.mjs";
-import { memoryModelConsentEpoch } from "./handlers/memory-model";
-import { createEphemeralContextExtension, SessionEphemeralContext } from "./session-ephemeral-context";
-import { createLegacyChannelContextExtension } from "./legacy-channel-context";
+import { SessionPromptPolicy } from "./session-prompt-policy";
+import { SessionEphemeralContext } from "./session-ephemeral-context";
+import { getLegacySessionToolNames, withExtensionTools } from "./session-tool-selection";
+export { getLegacySessionToolNames, withExtensionTools } from "./session-tool-selection";
+import { createDesktopSessionServices } from "./session-memory-services";
 
 // ============================================================================
 // Types
@@ -103,50 +97,6 @@ type ExtensionBindingOptions = {
 };
 
 export type ExternalSessionCommand = "compact" | "reload";
-
-const CODING_TOOL_NAMES = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
-const SESSION_TOOLS_ENTRY = "pi-desktop-session-tools";
-
-type PersistedSessionTools = {
-  version: 1;
-  toolNames: string[];
-};
-
-function parsePersistedSessionTools(value: unknown): string[] | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const state = value as Partial<PersistedSessionTools>;
-  if (
-    state.version !== 1 ||
-    !Array.isArray(state.toolNames) ||
-    !state.toolNames.every((name) => typeof name === "string")
-  ) {
-    return undefined;
-  }
-  return filterDesktopToolNames(state.toolNames);
-}
-
-export function getLegacySessionToolNames(sessionManager: Pick<SessionManager, "getEntries">): string[] | undefined {
-  const entries = sessionManager.getEntries();
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry.type !== "custom" || entry.customType !== SESSION_TOOLS_ENTRY) continue;
-    const toolNames = parsePersistedSessionTools(entry.data);
-    if (toolNames !== undefined) return toolNames;
-  }
-  return undefined;
-}
-
-export function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
-  if (toolNames.length === 0) return [];
-
-  const codingToolNames = new Set(CODING_TOOL_NAMES);
-  const extensionToolNames = session
-    .getAllTools()
-    .map((t) => t.name)
-    .filter((name) => !codingToolNames.has(name) && !isBrowserToolName(name));
-
-  return filterDesktopToolNames([...toolNames, ...extensionToolNames]);
-}
 
 // ============================================================================
 // AgentSessionWrapper
@@ -564,7 +514,9 @@ export class AgentSessionWrapper {
             ? command.clientRunId
             : undefined;
         const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
-        const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+        const streamingBehavior = promptImages?.length
+          ? undefined
+          : (command.streamingBehavior as "steer" | "followUp" | undefined);
         if (!streamingBehavior) browserAgentRuntime.beginTurn(this.sessionId, "local");
         const invokePrompt = () => {
           if (!streamingBehavior) this.ephemeralContext?.beginLocalTurn();
@@ -732,12 +684,14 @@ export class AgentSessionWrapper {
 
       case "steer": {
         const steerImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        if (steerImages?.length) return this.send({ ...command, type: "prompt", streamingBehavior: undefined });
         await this.inner.steer(command.message as string, steerImages?.length ? steerImages : undefined);
         return null;
       }
 
       case "follow_up": {
         const followImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        if (followImages?.length) return this.send({ ...command, type: "prompt", streamingBehavior: undefined });
         await this.inner.followUp(command.message as string, followImages?.length ? followImages : undefined);
         return null;
       }
@@ -1478,62 +1432,12 @@ export async function startRpcSession(
 
     // Build services before restoring the saved model so extension providers are available.
     const promptPolicy = new SessionPromptPolicy(sessionToolNames?.length === 0);
-    let validationMemoryRuntime: Promise<ModelRuntime> | undefined;
-    const getRemoteMemoryRuntime = (): ModelRuntime | Promise<ModelRuntime> => {
-      const authPath = process.env.PI_MEMORY_TEST_AUTH_PATH;
-      if (process.env.PI_MEMORY_TEST_MODE === "1" && authPath) {
-        validationMemoryRuntime ??= ModelRuntime.create({
-          modelsPath: null,
-          authPath,
-          refreshOnCreate: false,
-          allowModelNetwork: false,
-        });
-        return validationMemoryRuntime;
-      }
-      return memoryRuntime;
-    };
-    const tieredBudget: TieredBudgetController = new TieredBudgetController({
-      warmRunner: (options) => async (plan) =>
-        createFlashWarmRunner({
-          ...options,
-          runtime: await getRemoteMemoryRuntime(),
-          onEvent: (event) => {
-            const auditPath = process.env.PI_TIERED_TEST_AUDIT_PATH;
-            if (process.env.PI_MEMORY_TEST_MODE === "1" && auditPath)
-              appendFileSync(auditPath, JSON.stringify(event) + "\n", { mode: 0o600 });
-          },
-        })(plan),
-      consentVersion: memoryModelConsentEpoch,
-      supports: (model) =>
-        supportsTieredModel(model) ||
-        (process.env.PI_MEMORY_TEST_MODE === "1" &&
-          model.provider === "tier-compare-codex" &&
-          model.api === "openai-codex-responses" &&
-          /^http:\/\/127\.0\.0\.1:\d+(?:\/|$)/.test(model.baseUrl ?? "")),
-    });
-    const extensionFactories = [
-      createLegacyChannelContextExtension(),
-      createEphemeralContextExtension(ephemeralContext),
-      createDesktopPromptExtension(promptPolicy),
-      createTieredWorkspaceExtension(),
-      tieredBudget.extension(),
-      createTaskMemoryExtension({
-        onRemoteEvent: (event) => {
-          const auditPath = process.env.PI_MEMORY_TEST_AUDIT_PATH;
-          if (process.env.PI_MEMORY_TEST_MODE === "1" && auditPath) {
-            appendFileSync(auditPath, JSON.stringify(event) + "\n", { mode: 0o600 });
-          }
-        },
-        getRemoteRuntime: getRemoteMemoryRuntime,
-      }),
-    ];
-    const nativeServices = await createAgentSessionServices({
+    const { services, tieredBudget, modelSessions } = await createDesktopSessionServices(
       cwd,
       agentDir,
-      resourceLoaderOptions: { extensionFactories },
-    });
-    const services = { ...nativeServices, settingsManager: tieredBudget.wrapSettings(nativeServices.settingsManager) };
-    const memoryRuntime: ModelRuntime = services.modelRuntime;
+      promptPolicy,
+      ephemeralContext,
+    );
     const executionContext = await toolchainRuntime.createExecutionContext({
       cwd,
       intent: "agent-shell",
@@ -1544,6 +1448,7 @@ export async function startRpcSession(
       toolchainRuntime,
       services.settingsManager.getShellCommandPrefix(),
       (command) => browserAgentRuntime.guardBash(sessionManager.getSessionId(), command),
+      (execute) => execute,
     );
     const customTools = [
       createBashToolDefinition(cwd, bashOptions),
@@ -1568,6 +1473,7 @@ export async function startRpcSession(
       excludeTools: [...EXCLUDED_PI_TOOLS],
     });
     tieredBudget.install(inner);
+    modelSessions.install(inner);
     const realSessionId = inner.sessionId as string;
 
     // Keep every tool registered so a session initialized with no tools can enable

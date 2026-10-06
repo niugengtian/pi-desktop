@@ -34,6 +34,7 @@ const requiredMainMarkers = [
   "--reap-stdio-v1",
 ];
 const requiredAgentHostMarkers = ["--owner-stdio-v1", "JOB_TERMINATE"];
+const nativeSqliteImportIsValid = !/\bfrom\s+["']sqlite["']/.test(agentHostBundle);
 const missingMainMarkers = requiredMainMarkers.filter((marker) => !mainBundle.includes(marker));
 const missingAgentHostMarkers = requiredAgentHostMarkers.filter((marker) => !agentHostBundle.includes(marker));
 const forbiddenMarkers = [
@@ -110,6 +111,7 @@ const windowsHelperPackagingIsValid =
   builderConfig.includes("manifest.json");
 
 if (
+  !nativeSqliteImportIsValid ||
   !updaterDependencyIsValid ||
   !toolchainCatalogPackagingIsValid ||
   !herdrPackagingIsValid ||
@@ -121,6 +123,7 @@ if (
   missingPackageExclusions.length > 0 ||
   missingPiAuthoringAssets.length > 0
 ) {
+  if (!nativeSqliteImportIsValid) console.error("FAIL: Agent Host must preserve the prefix-only node:sqlite import");
   if (!updaterDependencyIsValid) {
     console.error("FAIL: electron-updater must be an exact production dependency matching package-lock.json");
   }

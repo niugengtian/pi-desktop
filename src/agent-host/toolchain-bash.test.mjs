@@ -79,3 +79,30 @@ test("reports structured Bash absence and never falls back to PATH", async () =>
   const options = createToolchainBashOptions(context({}), runtime);
   await assert.rejects(options.operations.exec("echo test", { cwd: "/workspace" }), missing);
 });
+
+test("runs the team execution wrapper after the asynchronous browser guard", async () => {
+  const observed = [];
+  const descriptor = { executable: "/bin/bash" };
+  const options = createToolchainBashOptions(
+    context({ "shell.bash": descriptor }),
+    undefined,
+    undefined,
+    async (command) => {
+      await Promise.resolve();
+      observed.push(["browser-guard", command]);
+    },
+    (execute) => async (command, cwd, input) => {
+      assert.equal(typeof execute, "function");
+      observed.push(["team-boundary", command, cwd]);
+      assert.equal(input.timeout, 2);
+      return { exitCode: 7 };
+    },
+  );
+  assert.deepEqual(await options.operations.exec("fictional command", "/fixture", { onData() {}, timeout: 2 }), {
+    exitCode: 7,
+  });
+  assert.deepEqual(observed, [
+    ["browser-guard", "fictional command"],
+    ["team-boundary", "fictional command", "/fixture"],
+  ]);
+});

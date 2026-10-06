@@ -1,3 +1,4 @@
+import { verifyAsarIntegrity } from "./verify-asar-integrity.mjs";
 import path from "node:path";
 import { extractFile, listPackage } from "@electron/asar";
 import semver from "semver";
@@ -51,6 +52,8 @@ export default async function verifyPackagedModels(context) {
       ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents", "Resources")
       : path.join(context.appOutDir, "resources");
   const archive = path.join(resources, "app.asar");
+  const files = verifyAsarIntegrity(archive);
+  console.log(`[package] verified physical integrity of ${files} files`);
   const count = verifyModelArchive(archive);
   console.log(`[package] verified ${count} model runtime packages in ${archive}`);
 }

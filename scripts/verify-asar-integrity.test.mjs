@@ -1,0 +1,23 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createPackageWithOptions, getRawHeader } from "@electron/asar";
+import { verifyAsarIntegrity } from "./verify-asar-integrity.mjs";
+test("full package validation detects payload drift beyond the checked runtime entry", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-asar-integrity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  mkdirSync(source);
+  writeFileSync(join(source, "runtime.js"), "export const ready = true;");
+  writeFileSync(join(source, "later.js"), "export const result = 17;");
+  const archive = join(root, "app.asar");
+  await createPackageWithOptions(source, archive, {});
+  assert.equal(verifyAsarIntegrity(archive), 2);
+  const { header, headerSize } = getRawHeader(archive);
+  const bytes = readFileSync(archive);
+  bytes[headerSize + 8 + Number(header.files["later.js"].offset)] ^= 1;
+  writeFileSync(archive, bytes);
+  assert.throws(() => verifyAsarIntegrity(archive), /later.js/);
+});

@@ -15,7 +15,13 @@ export function remoteSourcePreview(candidates) {
   return text;
 }
 
-export function createFlashMemoryRunner({ runtime, signal, authorized, onEvent = () => {} }) {
+export function createFlashMemoryRunner({
+  runtime,
+  signal,
+  authorized,
+  onEvent = () => {},
+  transport = globalThis.fetch,
+}) {
   if (!runtime || typeof authorized !== "function")
     throw new Error("A Pi runtime and explicit source consent are required.");
   return async (id, prompt) => {
@@ -100,7 +106,7 @@ export function createFlashMemoryRunner({ runtime, signal, authorized, onEvent =
               throw new Error("Serialized remote payload does not match its approval.");
             dispatched = true;
             onEvent({ phase: "dispatch", at: new Date().toISOString() });
-            const response = await globalThis.fetch(url, { ...options, redirect: "error" });
+            const response = await transport(url, { ...options, redirect: "error" });
             onEvent({ phase: "response", at: new Date().toISOString(), status: response.status });
             return response;
           },

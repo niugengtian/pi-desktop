@@ -24,12 +24,25 @@ import {
   HANDOFF_ENTRY_TYPE,
   UNCONFIRMED_TURN_MARKER,
   buildIncrementalHandoff,
+  buildWebContextRequest,
   checkpointFrom,
-  consumeHandoffAcknowledgement,
+  consumeLegacyHandoffAcknowledgement,
   createCheckpoint,
   planConversationRoute,
   shouldDedupeRetry,
+  validateWebPrompt,
 } from "../src/continuity.mjs";
+import {
+  WEB_CONTRACT,
+  DELIVERY_ENTRY_TYPE,
+  acceptTieredPayload,
+  requireTieredReceipt,
+} from "../src/tiered-contract.mjs";
+type TieredOptions = SimpleStreamOptions & {
+  pageProjection?: Record<string, unknown>;
+  pageBeforeDispatch?: (request: unknown) => void;
+  pageOnReceipt?: (receipt: unknown, markdown: string) => void;
+};
 
 const bundledBridge = fileURLToPath(new URL("../bridge/opencli-bridge.mjs", import.meta.url));
 
@@ -96,6 +109,7 @@ type CompletedPageTurn = {
   assistantText: string;
   handoff?: HandoffBundle;
   handoffAcknowledged: boolean;
+  tieredDelivery?: Record<string, unknown>;
 };
 
 function bindingFrom(value: unknown): ProviderBinding | undefined {
@@ -140,22 +154,30 @@ function pageSite(modelId: string) {
   return modelId === "chatgpt-web" ? "chatgpt" : "deepseek";
 }
 
-function nodeExecutable() {
-  const configured = String(process.env.PI_PAGE_PROVIDER_NODE ?? "").trim();
-  if (configured) return configured;
-  if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) return process.execPath;
+function bridgeLaunch() {
+  const override = String(process.env.PI_PAGE_PROVIDER_BRIDGE ?? "").trim();
+  if (override) return { command: override, args: ["--stdio"] };
+
+  const configuredNode = String(process.env.PI_PAGE_PROVIDER_NODE ?? "").trim();
+  if (configuredNode) return { command: configuredNode, args: [bundledBridge, "--stdio"] };
+  if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) {
+    return { command: process.execPath, args: [bundledBridge, "--stdio"] };
+  }
   const candidates = [
     join(homedir(), ".hermes", "node", "bin", "node"),
     "/opt/homebrew/bin/node",
     "/usr/local/bin/node",
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? "node";
-}
-
-function bridgeLaunch() {
-  const override = String(process.env.PI_PAGE_PROVIDER_BRIDGE ?? "").trim();
-  if (override) return { command: override, args: ["--stdio"] };
-  return { command: nodeExecutable(), args: [bundledBridge, "--stdio"] };
+  const node = candidates.find((candidate) => existsSync(candidate));
+  if (node) return { command: node, args: [bundledBridge, "--stdio"] };
+  if (process.versions.electron) {
+    return {
+      command: process.execPath,
+      args: [bundledBridge, "--stdio"],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
+  return { command: "node", args: [bundledBridge, "--stdio"] };
 }
 
 function emptyAssistantMessage(model: Model<Api>): AssistantMessage {
@@ -181,7 +203,7 @@ function emptyAssistantMessage(model: Model<Api>): AssistantMessage {
 function streamPageProvider(
   model: Model<Api>,
   context: Context,
-  options: SimpleStreamOptions | undefined,
+  options: TieredOptions | undefined,
   taskId: string,
   checkpoints: TaskCheckpoint[],
   binding: ProviderBinding | undefined,
@@ -203,26 +225,50 @@ function streamPageProvider(
     try {
       stream.push({ type: "start", partial: output });
       const input = latestUserInput(context);
-      const handoff = buildIncrementalHandoff({
-        taskId,
-        targetModelId: model.id,
-        checkpoints,
-        lastSyncedCheckpoint: binding?.lastSyncedCheckpoint ?? 0,
-        currentRequest: input.text,
-      }) as HandoffBundle | undefined;
+      const tiered = options?.pageProjection;
+      if (!tiered && (options?.pageBeforeDispatch || options?.pageOnReceipt))
+        throw new Error("Incomplete tiered Web options; legacy context fallback is prohibited.");
+      if (
+        tiered &&
+        (!options?.onPayload ||
+          !options.pageBeforeDispatch ||
+          !options.pageOnReceipt ||
+          process.env.PI_PAGE_PROVIDER_BRIDGE)
+      )
+        throw new Error("Tiered Web requires the bundled gated bridge and complete text policy callbacks.");
+      const finalTiered = tiered
+        ? acceptTieredPayload(await options!.onPayload!(tiered, model), tiered, taskId, model.id)
+        : undefined;
+      const webRequest = finalTiered?.text ?? buildWebContextRequest(context, input.text);
+      const handoff = finalTiered
+        ? undefined
+        : (buildIncrementalHandoff({
+            taskId,
+            targetModelId: model.id,
+            checkpoints,
+            lastSyncedCheckpoint: binding?.lastSyncedCheckpoint ?? 0,
+            currentRequest: webRequest,
+          }) as HandoffBundle | undefined);
       if (handoff && handoffBlocked) {
         throw new Error(
           `The previous handoff to ${model.id} was not acknowledged. Run /page-provider-handoff-retry to retry it explicitly.`,
         );
       }
+      const prompt = validateWebPrompt(handoff?.text ?? webRequest);
       const failedTurnRetry = shouldDedupeRetry(context.messages, input.text);
-      const route = planConversationRoute(binding?.remote.conversationId, failedTurnRetry);
+      const route = finalTiered
+        ? {
+            newConversation: finalTiered.newConversation,
+            ...(finalTiered.conversationId ? { conversationId: finalTiered.conversationId } : {}),
+          }
+        : planConversationRoute(binding?.remote.conversationId, failedTurnRetry);
       remoteTurnStarted = true;
       const result = await runPageProviderTurn({
-        text: handoff?.text ?? input.text,
-        dedupe: Boolean(handoff) || failedTurnRetry,
+        text: prompt,
+        dedupe: finalTiered ? false : Boolean(handoff) || failedTurnRetry,
         ...route,
-        images: input.images,
+        ...(finalTiered ? { deliveryContract: WEB_CONTRACT, beforeDispatch: options!.pageBeforeDispatch } : {}),
+        images: finalTiered ? finalTiered.attachments.map(({ data, mimeType }) => ({ data, mimeType })) : input.images,
         site: model.id === "chatgpt-web" ? "chatgpt" : "deepseek",
         mode: model.id === "deepseek-reasoner" ? "reasoner" : "chat",
         signal: turnSignal,
@@ -230,19 +276,38 @@ function streamPageProvider(
         ...bridgeLaunch(),
       });
 
-      const acknowledgement = handoff
-        ? consumeHandoffAcknowledgement(result.markdown, taskId, handoff.throughCheckpoint)
-        : { acknowledged: true, markdown: result.markdown };
-      const displayMarkdown = acknowledgement.acknowledged
-        ? acknowledgement.markdown
-        : `> **Task handoff was delivered but not acknowledged.** The synchronization cursor was not advanced.\n\n${result.markdown}`;
+      // A completed bridge result is the delivery acknowledgement: the adapter
+      // matched this exact prompt to a fully extracted assistant reply. Requiring
+      // the web model to echo an in-band marker conflicts with user output
+      // constraints such as "reply only with the marker" and falsely blocks a
+      // successful handoff. Strip the legacy marker when an older remote reply
+      // still includes it, but do not require model cooperation to advance.
+      const receipt = finalTiered ? requireTieredReceipt(result, finalTiered) : undefined;
+      if (receipt && options!.pageOnReceipt!(receipt, result.markdown) !== undefined)
+        throw new Error("Web receipt guard must complete synchronously and throw on refusal.");
+      if (turnSignal.aborted) throw new DOMException("Web result was cancelled.", "AbortError");
+      const response = handoff
+        ? consumeLegacyHandoffAcknowledgement(result.markdown, taskId, handoff.throughCheckpoint)
+        : { markdown: result.markdown };
+      const displayMarkdown = response.markdown;
       onCompleted({
         modelId: model.id,
         remote: result.remote as PageRemote,
         userText: input.text,
-        assistantText: acknowledgement.markdown,
+        assistantText: response.markdown,
         handoff,
-        handoffAcknowledged: acknowledgement.acknowledged,
+        handoffAcknowledged: true,
+        ...(receipt
+          ? {
+              tieredDelivery: {
+                ...receipt,
+                sourceHash: finalTiered.sourceHash,
+                projectionHash: finalTiered.projectionHash,
+                warmVersion: finalTiered.warmVersion,
+                hotSourceEntryIds: finalTiered.hotSourceEntryIds,
+              },
+            }
+          : {}),
       });
 
       const contentIndex = output.content.length;
@@ -461,6 +526,28 @@ export default function pageProviderExtension(pi: ExtensionAPI) {
     const taskId = ctx.sessionManager.getSessionId();
     const assistantEntryId = ctx.sessionManager.getLeafId() ?? undefined;
     if (!assistantEntryId) return;
+    if (pending.tieredDelivery) {
+      // Delivery evidence is metadata, not another summary/fact store or a legacy cursor advance.
+      pi.appendEntry(DELIVERY_ENTRY_TYPE, {
+        ...pending.tieredDelivery,
+        sessionId: taskId,
+        modelId: pending.modelId,
+        assistantEntryId,
+        createdAt: new Date().toISOString(),
+      });
+      const binding: ProviderBinding = {
+        schemaVersion: 1,
+        sessionId: taskId,
+        modelId: pending.modelId,
+        assistantEntryId,
+        lastSyncedCheckpoint: bindings.get(pending.modelId)?.lastSyncedCheckpoint ?? 0,
+        remote: pending.remote,
+        updatedAt: new Date().toISOString(),
+      };
+      bindings.set(binding.modelId, binding);
+      pi.appendEntry(BINDING_ENTRY_TYPE, binding);
+      return;
+    }
     const sequence = (checkpoints.at(-1)?.sequence ?? 0) + 1;
     const checkpoint = createCheckpoint({
       taskId,
@@ -510,35 +597,38 @@ export default function pageProviderExtension(pi: ExtensionAPI) {
     baseUrl: "page-provider://local",
     apiKey: "page-provider-local",
     api: "opencli-page" as Api,
-    streamSimple: (model, context, options) =>
-      streamPageProvider(
-        model,
-        context,
-        options,
-        activeTaskId,
-        checkpoints,
-        bindings.get(model.id),
-        blockedHandoffs.has(model.id),
-        (turn) => {
-          pendingTurn = turn;
-        },
-        (modelId, remote) => {
-          const previous = bindings.get(modelId);
-          const binding: ProviderBinding = {
-            schemaVersion: 1,
-            sessionId: activeTaskId,
-            modelId,
-            lastSyncedCheckpoint: previous?.lastSyncedCheckpoint ?? 0,
-            remote,
-            updatedAt: new Date().toISOString(),
-          };
-          bindings.set(modelId, binding);
-          // Keep remote discovery independently auditable. Reusing only the final
-          // binding type made a successful turn indistinguishable from a turn
-          // whose ID was not persisted until completion.
-          pi.appendEntry(PROVISIONAL_BINDING_ENTRY_TYPE, binding);
-        },
-      ),
+    streamSimple: Object.assign(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+        streamPageProvider(
+          model,
+          context,
+          options,
+          activeTaskId,
+          checkpoints,
+          bindings.get(model.id),
+          blockedHandoffs.has(model.id),
+          (turn) => {
+            pendingTurn = turn;
+          },
+          (modelId, remote) => {
+            const previous = bindings.get(modelId);
+            const binding: ProviderBinding = {
+              schemaVersion: 1,
+              sessionId: activeTaskId,
+              modelId,
+              lastSyncedCheckpoint: previous?.lastSyncedCheckpoint ?? 0,
+              remote,
+              updatedAt: new Date().toISOString(),
+            };
+            bindings.set(modelId, binding);
+            // Keep remote discovery independently auditable. Reusing only the final
+            // binding type made a successful turn indistinguishable from a turn
+            // whose ID was not persisted until completion.
+            pi.appendEntry(PROVISIONAL_BINDING_ENTRY_TYPE, binding);
+          },
+        ),
+      { tieredWebContract: WEB_CONTRACT },
+    ),
     models: [
       {
         id: "deepseek-chat",

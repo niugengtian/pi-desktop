@@ -19,5 +19,6 @@ export function planCodexBudget(
     warmText?: string;
     operation?: "chat" | "native-compaction";
     policy?: BudgetPolicy;
+    outputReservation?: number;
   },
 ): BudgetReport;

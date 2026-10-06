@@ -1,6 +1,7 @@
 # FLASH-02：明确授权的 Flash 非思考后台记忆
 
 ## 交付范围
+
 在89f0418后台取消修复之上，增加独立DeepSeek后台摘要。主聊天、原生compaction与普通provider上下文不变；不自动向主聊天注入记忆。不安装正式版，不复制真实历史或认证，不下载资源。
 
 - 唯一远端模型：`deepseek/deepseek-flash`（SDK显示DeepSeek V4.1 Flash）。API只允许`https://api.deepseek.com`的官方completion路径。
@@ -11,11 +12,13 @@
 - 延续来源指纹、独立AbortController、同步提交与Markdown人工编辑哈希保护。SDK/provider错误不原样暴露认证诊断。
 
 ## 小范围检查
+
 21条直接相关测试：后台/取消/身份漂移/人工编辑/通知故障/设置禁用/授权/回退相同配置版本/目标和off payload/禁止fallback/普通上下文不注入；全部通过。新增设置回退回归先失败（旧结果仍追加一条ledger），最小epoch修复后通过。
 
 局部ESLint/Prettier、Host和Renderer TypeScript、diff检查通过。不跑全量verify。Node测试的MODULE_TYPELESS_PACKAGE_JSON警告保留，未为消除警告改项目模块类型。
 
 ## 最终隔离包
+
 `/tmp/pi-flash02-desktop-validation/dist/mac-arm64/Pi Agent Desktop Flash Memory Check.app`
 
 最终ASAR SHA256：`59de621321bb1e7f8b3b056eea6bded39923eb3ab815cedd8f5aa068646f9524`。epoch阶段包为`ed742936...`，wire阶段包为`5175816c...`；均是历史证据，不冒充最终事实契约包。
@@ -23,6 +26,7 @@
 离线打包、171个SDK运行时包校验、ad-hoc深签和严格签名检查通过。bootstrap仅生成到out和验收目录，固定私有home/userData/logs，不纳入生产入口。旧初版ASAR `2118e15f...`为epoch修复前诊断包，不作为最终交付。
 
 ## 真实桌面验收（Agent驱动真实Electron UI，非SDK替身）
+
 仅操作隔离APP回环CDP，通过真实textarea、Send、设置Save、扩展确认/预览UI；读取实际JSONL与Markdown并查看截图。会话`01a0f504-6ee7-72f7-ad38-5e34db989dc9`，项目仅`/tmp/pi-flash02-desktop-validation/fictional-project`，主聊天始终本地Qwen；正式Sol没有更换。
 
 1. 初版第一条虚构聊天正常回复；Flash设置已选，但尚未确认来源，远端请求和ledger均为0。授权dialog实际展示原文和当前/未来文字范围；确认后摘要保留两套原名和顺序，148源字符→178摘要字符，预览与ledger一致。
@@ -41,6 +45,7 @@
 验收脚本曾因句号严格匹配、SPA URL查询参数、误写ledger哈希字段markdownHash而停止。修正测试脚本（实际字段hash），只续做未完成本地检查，不隐瞒失败，不重发已完成模型请求；代码包未因此改变。
 
 ## 证据及剩余边界
+
 `/tmp/pi-flash02-desktop-validation/`下：remote-audit.jsonl、desktop-phase1-result.json、desktop-phase2-result.json、desktop-final-result.json、desktop-final-cancel-result.json、storage-final-proof.json、consent-dialog.png、final-preview.png、final-cancel-preview.png、desktop-wire-result.json、quality-result.json、desktop-quality-result.json、quality-final-preview.png、quality-package.log。测试GUI/CDP验收后关闭；重新双击候选不会附带调试端口或恢复授权。
 
 - 仅短虚构纯文本路径的自动真实桌面验收，不冒充用户本人验收/所有场景交付。真实长历史、工具、附件、原生压缩、Web回收保持另案。

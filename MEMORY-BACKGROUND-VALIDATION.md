@@ -1,17 +1,20 @@
 # PERF-01b：后台记忆等待最小闭环
 
 ## 当前结论
+
 **PERF-01b短纯文本路径的最小闭环通过：真实桌面取消、正常预览、后台期间普通下一轮启动均有日志和落盘证据。修复与验收记录保存在独立分支`perf/background-task-memory`；未推送、未替换正式应用。此结论不包含长历史、附件、工具续轮或摘要内容质量。**
 
 SDK-01 的已验收提交仍为 `91b97bd`。本轮工作分支：`perf/background-task-memory`。
 上个隔离 SDK 包仍保留在 `/tmp/pi-sdk01-desktop-validation/dist`。
 
 ## 复现
+
 旧扩展 `turn_end` 返回待完成 Promise，SDK 的 `emitBoundary` 等待它；因此本地摘要延长请求的 busy 生命周期。
 受控慢 runner 的单条回归测试在修复前失败：`turn_end must not await a slow summary`，实际值是 pending Promise，而不是 undefined。
 这项复现没有向真实模型或外部网站提交历史。
 
 ## 修复范围
+
 - turn_end 只标记正常完成；agent_settled 后以 setImmediate 启动后台维护，不让扩展占用工具续轮边界。
 - 独立 AbortController；新请求、turn_start、切会话/分支、fork、compaction、shutdown 取消旧任务。
 - `/task-memory-cancel` 取消后台任务，不删除聊天历史。
@@ -22,7 +25,9 @@ SDK-01 的已验收提交仍为 `91b97bd`。本轮工作分支：`perf/backgroun
 - 跨 Markdown/JSONL 的进程崩溃原子性未重构；既有预算单位、120000字符上限、附件/工具续轮限制也不在本轮修复范围。
 
 ## 少量检查
+
 14个相关测试通过（background 9、compile 4、preview/context隔离 1）：
+
 1. turn_end立即返回；正常后台完成只追加一个ledger。
 2. 下一请求取消，晚结果不落盘。
 3. 会话替换、分支leaf漂移不串写。
@@ -40,6 +45,7 @@ Host TypeScript、变更文件 ESLint/Prettier、git diff --check通过。
 声明SHA256：`4bb071c41f8f9aaa3e1691c8c84873fa38a3067161ac0d22f085577a9e483be0`。
 
 ## 隔离候选
+
 - app：`/tmp/pi-background01-desktop-validation/dist/mac-arm64/Pi Agent Desktop Memory Background Check.app`
 - home：`/tmp/pi-background01-desktop-validation/home`
 - userData：上述home下`Library/Application Support/Pi Agent Desktop Memory Test`
@@ -57,7 +63,9 @@ Host TypeScript、变更文件 ESLint/Prettier、git diff --check通过。
 - 构建仍提示已记录的node-addon-api headers collector警告，未纳入本轮修复，也未验收共享终端原生功能。
 
 ## 已完成的真实桌面验收（2026-10-01）
+
 会话`01a0f360-3416-760f-9c13-99b722ef3d57`；实际cwd为隔离home下`pi-cwd-20260930`，没有读取正式项目。
+
 - 用户截图确认取消提示和正常预览；本地Ollama托管输出seq663–720确认第一轮回复01:34:40结束、探活约1.80秒，摘要task308在01:34:42启动，01:34:51收到cancel task并释放slot；不是只依据toast判成功。
 - 第一轮源entryIds `f5407bcf`、`1e715124`的预期记录`mem-ddce54bf5119075d41a99254`不存在；JSONL只有一个记忆ledger，属于第二轮，未发现取消任务迟到写入。
 - 第二轮回复01:36:40.704；探活约1.198秒、摘要约13.148秒；01:36:55.080追加ledger，回复到落盘14.376秒。后台化没有缩短模型推理本身。
@@ -68,6 +76,7 @@ Host TypeScript、变更文件 ESLint/Prettier、git diff --check通过。
 - 预览弹窗期间Running command/Stop来自等待用户confirm的预览命令本身，单张截图不能据此判定后台摘要仍占busy。
 
 ## 最后一次现场补测：普通下一轮在后台期间启动（通过）
+
 - 会话仍为`01a0f360-3416-760f-9c13-99b722ef3d57`。下面使用本地UTC+8时间，依据JSONL及Ollama托管输出seq1308–1476。
 - 01:57:54.632 第一个任务回复；后台探活随后完成，摘要task804在01:57:55.500开始计算。
 - 01:57:55.872 下一条普通消息入JSONL（距回复1.240秒）；旧摘要HTTP请求55.873结束500，服务端56.424明确cancel task804，56.587释放slot。这是本地主/摘要共用一个推理slot时的取消传递，不是主聊天失败。
@@ -79,10 +88,12 @@ Host TypeScript、变更文件 ESLint/Prettier、git diff --check通过。
 - 当前真实桌面覆盖短纯文本的取消和续聊；切会话/分支、人工编辑等安全边界只有受控相关测试，未宣称完成全场景桌面验收。
 
 ## 之前补测与判读边界（现已由上述最后一次补测补齐）
+
 - 普通下一条聊天请求在摘要尚未结束时立即启动：最初用户是在取消后约42秒才发下一任务，不能冒充这一条已经现场验证。
 - 补测时间（本地UTC+8）：纸飞机任务01:51:59.213回复，01:52:06.230记忆落盘（7.017秒）；普通测试消息01:54:41.777提交、01:54:53.238回复。提交时摘要早已完成约155.547秒，因此本次只确认普通回复正常，未覆盖背景运行窗口。记忆随后01:54:59.014落盘。用户需预先复制下一条消息，在回复出现后立即发送，避免把这个时序误判为通过。
 
 ## 原桌面验收步骤与结果
+
 - 虚构短文本收到回复后，摘要尚未完成时发送`/task-memory-cancel`，命令能够执行。
 - 取消后本轮没有迟到记忆ledger或新Markdown。取消命令必须在实际pending期间执行；不能只依据toast或在摘要已完成后执行的取消命令判为通过。
 - 第二个虚构任务不取消，后台正常完成；`/task-memory-preview`与新ledger/Markdown一致。

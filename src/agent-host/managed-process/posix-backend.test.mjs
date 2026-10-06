@@ -17,12 +17,26 @@ class FakeWorker extends EventEmitter {
   send(message) {
     this.sent.push(message);
     if (message.type === "bootstrap") {
+      setImmediate(() =>
+        this.emit("message", {
+          type: "prepared",
+          processId: message.processId,
+          runId: message.runId,
+          nonce: message.nonce,
+        }),
+      );
+    }
+    if (message.type === "commit") {
       setImmediate(() => this.emit("message", { type: "started", shellPid: this.pid + 1 }));
+    }
+    if (message.type === "stop") {
+      setImmediate(() => this.close(0));
     }
     return true;
   }
 
   close(code = 0, signal = null) {
+    if (!this.connected) return;
     this.exitCode = code;
     this.signalCode = signal;
     this.connected = false;
@@ -94,7 +108,17 @@ test("POSIX backend implements prepare, commit, I/O, stop, and verified group cl
     createdAt: 1_234,
   });
   await assert.rejects(backend.commit(prepared, 0), /Invalid POSIX prepared containment/);
+  assert.equal(worker.sent.filter((message) => message.type === "commit").length, 0);
+  assert.throws(() => backend.write({ text: "early", appendNewline: false, close: false }), /not committed/);
   await backend.commit(prepared, 7);
+  assert.deepEqual(worker.sent.at(-1), {
+    type: "commit",
+    processId: "proc-test",
+    runId: "run-test",
+    nonce: prepared.reaper.nonce,
+    journalRevision: 7,
+  });
+  await assert.rejects(backend.commit(prepared, 7), /Invalid POSIX/);
 
   worker.stdout.write("ready\n");
   backend.write({ text: "hello", appendNewline: true, close: false });
@@ -140,3 +164,34 @@ test("POSIX backend reports host-failure and retains uncertainty when group clea
     exit: { code: 9, signal: "SIGKILL", reason: "host-failure" },
   });
 });
+
+for (const scenario of ["missing-fingerprint", "cancel-during-fingerprint", "stop-before-commit"]) {
+  test(`POSIX prepare cannot authorize effects: ${scenario}`, async () => {
+    const worker = new FakeWorker();
+    const controller = new globalThis.AbortController();
+    const backend = new PosixManagedProcessBackend({
+      platform: "darwin",
+      workerEntryPath: "/app/managed-process-worker.mjs",
+      hostInstanceId: "host-test",
+      spawnProcess: () => worker,
+      fingerprint: async () => {
+        if (scenario === "cancel-during-fingerprint") controller.abort();
+        return scenario === "missing-fingerprint" ? null : "fictional-fingerprint";
+      },
+      terminateProcessGroup: async () => true,
+    });
+    if (scenario === "stop-before-commit") {
+      const prepared = await backend.prepare(launchInput(), controller.signal);
+      await backend.stop("force", "user");
+      await assert.rejects(backend.commit(prepared, 1), /Invalid POSIX/);
+      await backend.waitForExit();
+    } else {
+      await assert.rejects(backend.prepare(launchInput(), controller.signal), /identity|live owner/);
+    }
+    assert.equal(
+      worker.sent.some((message) => message.type === "commit"),
+      false,
+    );
+    assert.equal(worker.connected, false);
+  });
+}

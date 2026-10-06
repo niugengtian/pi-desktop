@@ -14,10 +14,14 @@ import { constants as fsConstants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createInterface } from "node:readline";
+import { WEB_CONTRACT, hashText } from "../src/tiered-contract.mjs";
+let frames;
+let rawRequest;
 
-const MAX_REQUEST_BYTES = 56 * 1024 * 1024;
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 120 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_TOTAL_BYTES = 80 * 1024 * 1024;
 const MAX_IMAGES = 8;
 const SUPPORTED_SITES = new Set(["deepseek", "chatgpt", "gemini"]);
 
@@ -135,19 +139,16 @@ async function resolveOpenCliRoot() {
 
 async function readRequest() {
   process.stdin.setEncoding("utf8");
-  let input = "";
-  for await (const chunk of process.stdin) {
-    input += chunk;
-    if (Buffer.byteLength(input, "utf8") > MAX_REQUEST_BYTES) {
-      throw new Error("Page Provider request is too large.");
-    }
-  }
-  const lines = input
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (lines.length !== 1) throw new Error("Expected exactly one NDJSON request.");
-  const request = JSON.parse(lines[0]);
+  const channel = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  frames = channel[Symbol.asyncIterator]();
+  const first = await frames.next();
+  if (first.done || Buffer.byteLength(first.value, "utf8") > MAX_REQUEST_BYTES)
+    throw new Error("Missing or oversized NDJSON request.");
+  const request = JSON.parse(first.value);
+  rawRequest = request;
+  if (!request?.params?.deliveryContract) {
+    if (!(await frames.next()).done) throw new Error("Expected exactly one NDJSON request.");
+  } else if (request.method !== "turn.send") throw new Error("Invalid gated Web method.");
   const method = String(request?.method ?? "");
   const site = String(request?.params?.site ?? process.env.PI_PAGE_PROVIDER_SITE ?? "deepseek")
     .trim()
@@ -184,6 +185,15 @@ async function readRequest() {
   if (conversationId && newConversation) {
     throw new Error("Page Provider cannot create and resume a conversation in the same turn.");
   }
+  const deliveryContract = request?.params?.deliveryContract;
+  if (
+    deliveryContract &&
+    (deliveryContract !== WEB_CONTRACT ||
+      (!newConversation && !conversationId) ||
+      (newConversation && conversationId) ||
+      request.params.dedupe)
+  )
+    throw new Error("Invalid gated Web route.");
   const attachments = Array.isArray(request?.params?.attachments) ? request.params.attachments : [];
   if (attachments.length > MAX_IMAGES) {
     throw new Error(`Page Provider supports at most ${MAX_IMAGES} images per turn.`);
@@ -197,13 +207,13 @@ async function readRequest() {
     }
     const bytes = Buffer.from(data, "base64");
     if (!data || bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
-      throw new Error("Each Page Provider image must be between 1 byte and 15 MiB.");
+      throw new Error("Each Page Provider image must be between 1 byte and 10 MiB.");
     }
     totalBytes += bytes.byteLength;
     return { mimeType, bytes };
   });
   if (totalBytes > MAX_IMAGE_TOTAL_BYTES) {
-    throw new Error("Page Provider images may total at most 40 MiB per turn.");
+    throw new Error("Page Provider images may total at most 80 MiB per turn.");
   }
   if (!text && normalizedAttachments.length === 0) {
     throw new Error("Page Provider request has no text or image.");
@@ -215,6 +225,7 @@ async function readRequest() {
     mode,
     site,
     dedupe: request?.params?.dedupe === true,
+    deliveryContract,
     newConversation,
     conversationId,
     attachments: normalizedAttachments,
@@ -375,11 +386,17 @@ async function main() {
   const packagedAdapterPath = join(root, "clis", site, `${adapterName}.js`);
   const userAdapterPath = join(homedir(), ".opencli", "clis", site, `${adapterName}.js`);
   let adapterPath = packagedAdapterPath;
-  try {
-    await access(userAdapterPath, fsConstants.R_OK);
-    adapterPath = userAdapterPath;
-  } catch {
-    // No private override; use the adapter shipped by the external package.
+  const candidateRoot = String(process.env.PI_PAGE_PROVIDER_ADAPTER_ROOT ?? "").trim();
+  if (candidateRoot && request.deliveryContract === WEB_CONTRACT) {
+    // Explicit candidate path; missing/incompatible files must NOT fall back to installed code.
+    adapterPath = join(resolve(candidateRoot), site, `${adapterName}.js`);
+  } else {
+    try {
+      await access(userAdapterPath, fsConstants.R_OK);
+      adapterPath = userAdapterPath;
+    } catch {
+      // Legacy default only; strict capability check below still refuses old adapters.
+    }
   }
   await access(executionPath, fsConstants.R_OK);
   await access(adapterPath, fsConstants.R_OK);
@@ -433,6 +450,21 @@ async function main() {
     return;
   }
 
+  const strict = request.deliveryContract === WEB_CONTRACT;
+  if (strict && command.pageProviderDispatchContract !== WEB_CONTRACT)
+    throw new Error("Installed site adapter lacks the gated dispatch/receipt contract; no fallback.");
+  let permitted = false;
+  let evidence;
+  const beforeSubmit = async (actualText) => {
+    if (permitted || actualText !== request.text) throw new Error("Web composer text changed or duplicate submit.");
+    emit({ type: "turn.dispatch_ready", turnId: request.id, request: rawRequest });
+    const frame = await frames.next();
+    if (frame.done) throw new Error("Web dispatch was not approved.");
+    const permit = JSON.parse(frame.value);
+    if (permit.id !== request.id || permit.method !== "turn.dispatch" || permit.promptHash !== hashText(request.text))
+      throw new Error("Invalid Web dispatch approval.");
+    permitted = true;
+  };
   const releaseSiteLock = await acquireSiteLock(site);
   try {
     emit({ type: "provider.state", state: "ready", provider: { site } });
@@ -445,6 +477,14 @@ async function main() {
         {
           prompt: request.text,
           timeout,
+          ...(strict
+            ? {
+                beforeSubmit,
+                onDelivery: (value) => {
+                  evidence = value;
+                },
+              }
+            : {}),
           onConversation: async (conversation) => {
             const remote = responseRemote([conversation], site, request.mode);
             if (remote.conversationId && remote.conversationUrl) {
@@ -466,11 +506,34 @@ async function main() {
       turnFailureStage = "extraction";
       const markdown = responseMarkdown(result);
       if (!markdown) throw new Error("OpenCLI completed without an assistant response.");
+      const remote = responseRemote(result, site, request.mode);
+      if (
+        strict &&
+        (!permitted ||
+          evidence?.promptHash !== hashText(request.text) ||
+          evidence?.responseHash !== hashText(markdown) ||
+          evidence?.evidence !== "adapter-exact-prompt-pair" ||
+          !remote.conversationId ||
+          !remote.conversationUrl)
+      )
+        throw new Error("Web reply could not be paired with the exact approved input.");
       emit({
         type: "turn.completed",
         turnId: request.id,
         message: { markdown },
-        remote: responseRemote(result, site, request.mode),
+        remote,
+        ...(strict
+          ? {
+              receipt: {
+                schema: WEB_CONTRACT,
+                turnId: request.id,
+                promptHash: evidence.promptHash,
+                responseHash: evidence.responseHash,
+                evidence: evidence.evidence,
+                remote,
+              },
+            }
+          : {}),
       });
     } finally {
       await images.cleanup();

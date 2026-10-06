@@ -4,7 +4,6 @@ import {
   DraftPersistenceController,
   MAX_PERSISTED_DRAFT_FILES,
   MAX_PERSISTED_DRAFT_IMAGES,
-  MAX_PERSISTED_DRAFT_IMAGE_BYTES,
   getDraft,
   selectDraftImageAdditions,
   type ChatDraftImage,
@@ -133,12 +132,7 @@ export function useComposerDraft({
           );
         }
         if (selection.rejected.some(({ reason }) => reason === "bytes")) {
-          notices.push(
-            t(
-              "draftImageSizeLimit",
-              "The total image size exceeds the {size} MB draft limit. Remove or compress some images.",
-            ).replace("{size}", String(MAX_PERSISTED_DRAFT_IMAGE_BYTES / 1024 / 1024)),
-          );
+          notices.push(t("draftImageSizeLimit", "Each image must be at most 10 MB."));
         }
       }
       if (generation === imageBatchGenerationRef.current && failures.length > 0) {

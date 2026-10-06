@@ -7,9 +7,10 @@ import type {
 
 let child: ChildProcess | null = null;
 let bootstrapped = false;
+let prepared: ManagedProcessWorkerBootstrap | undefined;
+let commitTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let exiting = false;
-let stopSource: "agent" | "user" | "host" | "main" = "host";
 
 function send(event: ManagedProcessWorkerEvent): void {
   if (!process.connected) return;
@@ -51,10 +52,19 @@ function waitForChild(timeoutMs: number): Promise<boolean> {
   });
 }
 
-async function stop(mode: "graceful" | "force", source: typeof stopSource): Promise<void> {
-  if (stopping) return;
+function forceStop(): void {
+  send({ type: "stopping", phase: "force" });
+  groupSignal("SIGKILL");
+  setTimeout(() => process.exit(1), 1_500).unref();
+}
+
+async function stop(mode: "graceful" | "force"): Promise<void> {
+  if (mode === "force" && child) {
+    forceStop();
+    return;
+  }
+  if (stopping || exiting) return;
   stopping = true;
-  stopSource = source;
   if (!child) {
     process.exit(0);
     return;
@@ -67,15 +77,17 @@ async function stop(mode: "graceful" | "force", source: typeof stopSource): Prom
     groupSignal("SIGTERM");
     if (await waitForChild(3_000)) return;
   }
-  send({ type: "stopping", phase: "force" });
-  groupSignal("SIGKILL");
-  setTimeout(() => process.exit(1), 1_500).unref();
+  forceStop();
 }
 
 function validBootstrap(value: ManagedProcessWorkerBootstrap): boolean {
   return Boolean(
     value &&
     value.type === "bootstrap" &&
+    value.protocol === 2 &&
+    typeof value.nonce === "string" &&
+    value.nonce.length > 0 &&
+    value.nonce.length <= 200 &&
     typeof value.processId === "string" &&
     typeof value.runId === "string" &&
     typeof value.cwd === "string" &&
@@ -90,10 +102,41 @@ function validBootstrap(value: ManagedProcessWorkerBootstrap): boolean {
 function start(input: ManagedProcessWorkerBootstrap): void {
   if (bootstrapped || !validBootstrap(input)) {
     send({ type: "error", code: "INVALID_BOOTSTRAP", message: "Invalid managed process bootstrap" });
-    process.exit(2);
+    if (child) forceStop();
+    else process.exit(2);
     return;
   }
   bootstrapped = true;
+  prepared = input;
+  send({ type: "prepared", processId: input.processId, runId: input.runId, nonce: input.nonce });
+  commitTimer = setTimeout(() => {
+    send({ type: "error", code: "COMMIT_TIMEOUT", message: "Managed process commit timed out" });
+    process.exit(2);
+  }, 30_000);
+  commitTimer.unref();
+}
+
+function commit(message: Extract<ManagedProcessWorkerRequest, { type: "commit" }>): void {
+  const input = prepared;
+  if (
+    !input ||
+    child ||
+    stopping ||
+    exiting ||
+    !process.connected ||
+    message.processId !== input.processId ||
+    message.runId !== input.runId ||
+    message.nonce !== input.nonce ||
+    !Number.isSafeInteger(message.journalRevision) ||
+    message.journalRevision <= 0
+  ) {
+    send({ type: "error", code: "INVALID_COMMIT", message: "Invalid managed process commit" });
+    if (child) forceStop();
+    else process.exit(2);
+    return;
+  }
+  if (commitTimer) clearTimeout(commitTimer);
+  prepared = undefined;
   const childEnvironment = { ...process.env };
   delete childEnvironment.ELECTRON_RUN_AS_NODE;
   try {
@@ -114,14 +157,19 @@ function start(input: ManagedProcessWorkerBootstrap): void {
   child.stdout?.pipe(process.stdout);
   child.stderr?.pipe(process.stderr);
   child.once("spawn", () => send({ type: "started", shellPid: child?.pid ?? 0 }));
-  child.once("error", (error) => send({ type: "error", code: "SPAWN_FAILED", message: safeError(error) }));
-  child.once("close", (code, signal) => {
+  child.once("error", (error) => {
+    send({ type: "error", code: "SPAWN_FAILED", message: safeError(error) });
+    if (!child?.pid) process.exit(2);
+  });
+  child.once("exit", (code, signal) => {
     if (exiting) return;
     exiting = true;
     send({ type: "exit", code, ...(signal ? { signal } : {}) });
-    // A root shell that exits must not leave an internally-backgrounded descendant.
+    // Descendants can keep the root's stdio open after its exit, so waiting for
+    // "close" can deadlock cleanup. Keep this worker alive as the group identity
+    // until escalation, even if the Host/control pipe disappears meanwhile.
     if (!stopping) groupSignal("SIGTERM");
-    setTimeout(() => process.exit(stopping && stopSource !== "host" ? 0 : (code ?? 1)), 25).unref();
+    setTimeout(forceStop, 250);
   });
 }
 
@@ -129,6 +177,14 @@ process.on("message", (value: unknown) => {
   const message = value as ManagedProcessWorkerRequest;
   if (message?.type === "bootstrap") {
     start(message);
+    return;
+  }
+  if (message?.type === "commit") {
+    commit(message);
+    return;
+  }
+  if (message?.type === "stop") {
+    void stop(message.mode);
     return;
   }
   if (!bootstrapped || !child) return;
@@ -145,17 +201,16 @@ process.on("message", (value: unknown) => {
     }
     return;
   }
-  if (message?.type === "stop") void stop(message.mode, message.source);
 });
 
 process.on("disconnect", () => {
-  void stop("graceful", "host");
+  void stop("graceful");
 });
 process.on("SIGINT", () => {
-  if (!stopping) void stop("graceful", "host");
+  if (!stopping) void stop("graceful");
 });
 process.on("SIGTERM", () => {
-  if (!stopping) void stop("graceful", "host");
+  if (!stopping) void stop("graceful");
 });
 
 setTimeout(() => {

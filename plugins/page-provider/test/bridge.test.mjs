@@ -158,6 +158,60 @@ process.stdin.on("end", () => {
   assert.equal(result.markdown, "image/png:AQI=,image/jpeg:AwQ=");
 });
 
+test("runPageProviderTurn rejects malformed base64 before spawning", async () => {
+  let spawned = false;
+  await assert.rejects(
+    runPageProviderTurn({
+      images: [{ mimeType: "image/png", data: "not base64!" }],
+      spawn() {
+        spawned = true;
+        throw new Error("must not spawn");
+      },
+    }),
+    /canonical base64/,
+  );
+  assert.equal(spawned, false);
+});
+
+test("runPageProviderTurn rejects terminal events for another request", async () => {
+  const bridge = await fakeBridge(`
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    type: "turn.completed",
+    turnId: "different-request",
+    message: { markdown: "wrong result" }
+  }) + "\\n");
+});
+`);
+
+  await assert.rejects(
+    runPageProviderTurn({ text: "hello", command: process.execPath, args: [bridge], timeoutMs: 2_000 }),
+    /another request/,
+  );
+});
+
+test("runPageProviderTurn terminates a bridge after its terminal event", async () => {
+  const bridge = await fakeBridge(`
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    type: "turn.completed",
+    message: { markdown: "done" }
+  }) + "\\n");
+  setInterval(() => {}, 1000);
+});
+`);
+
+  const result = await runPageProviderTurn({
+    text: "hello",
+    command: process.execPath,
+    args: [bridge],
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.markdown, "done");
+});
+
 test("openPageProviderConversation opens one validated remote conversation", async () => {
   const bridge = await fakeBridge(`
 let input = "";

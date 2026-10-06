@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { call } from "@/lib/api-client";
 import { useI18n } from "@/i18n";
+import { readHiddenProjects, saveHiddenProjects } from "@/lib/project-history";
 import type { SessionInfo } from "@/lib/types";
 import { getRecentProjects } from "@/hooks/useSidebarWorkspace";
 import { abbreviateHomePath } from "@/lib/display-path";
@@ -25,6 +26,19 @@ export function ProjectPicker({
 }: Props) {
   const { t } = useI18n();
   const deferFocus = useDeferredFocus();
+  const [hiddenProjects, setHiddenProjects] = useState(readHiddenProjects);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const updateHidden = (next: Set<string>) => {
+    try {
+      saveHiddenProjects(next);
+      setHiddenProjects(next);
+      setHistoryError(null);
+      return true;
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  };
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [projectFilter, setProjectFilter] = useState("");
   const [customPathOpen, setCustomPathOpen] = useState(false);
@@ -106,10 +120,12 @@ export function ProjectPicker({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const recentProjects = getRecentProjects(allSessions);
+  const allProjects = getRecentProjects(allSessions);
+  const recentProjects = allProjects.filter((project) => !hiddenProjects.has(project));
+  const projectLabel = (project: string) => abbreviateHomePath(project, homeDir);
   const showProjectFilter = recentProjects.length > 8;
   const visibleProjects = projectFilter.trim()
-    ? recentProjects.filter((p) => p.toLowerCase().includes(projectFilter.trim().toLowerCase()))
+    ? recentProjects.filter((p) => `${projectLabel(p)} ${p}`.toLowerCase().includes(projectFilter.trim().toLowerCase()))
     : recentProjects;
 
   return (
@@ -134,7 +150,7 @@ export function ProjectPicker({
       >
         {selectedCwd ? (
           <PathLabel
-            text={abbreviateHomePath(selectedProject ?? selectedCwd, homeDir)}
+            text={projectLabel(selectedProject ?? selectedCwd)}
             style={{
               flex: 1,
               fontFamily: "var(--font-mono)",
@@ -204,54 +220,75 @@ export function ProjectPicker({
         )}
         <div style={{ maxHeight: "min(50vh, 380px)", overflowY: "auto" }}>
           {visibleProjects.map((project) => (
-            <button
-              key={project}
-              onClick={() => {
-                setSelectedCwd(project);
-                setProjectFilter("");
-                setCustomPathOpen(false);
-                setCustomPathValue("");
-                setCustomPathError(null);
-                setDropdownOpen(false);
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 7,
-                width: "100%",
-                padding: "8px 10px",
-                background: "var(--bg)",
-                border: "none",
-                borderBottom: "1px solid var(--border)",
-                color: project === selectedProject ? "var(--text)" : "var(--text-muted)",
-                cursor: "pointer",
-                textAlign: "left",
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              title={project}
-            >
-              {project === selectedProject && (
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ flexShrink: 0 }}
-                >
-                  <polyline points="1.5 5 4 7.5 8.5 2.5" />
-                </svg>
-              )}
-              {project !== selectedProject && <span style={{ width: 10, flexShrink: 0 }} />}
-              <PathLabel text={abbreviateHomePath(project, homeDir)} style={{ flex: 1 }} />
-            </button>
+            <div key={project} style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
+              <button
+                onClick={() => {
+                  setSelectedCwd(project);
+                  setProjectFilter("");
+                  setCustomPathOpen(false);
+                  setCustomPathValue("");
+                  setCustomPathError(null);
+                  setDropdownOpen(false);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 7,
+                  flex: 1,
+                  minWidth: 0,
+                  padding: "8px 10px",
+                  background: "var(--bg)",
+                  border: "none",
+                  color: project === selectedProject ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={project}
+              >
+                {project === selectedProject && (
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ flexShrink: 0 }}
+                  >
+                    <polyline points="1.5 5 4 7.5 8.5 2.5" />
+                  </svg>
+                )}
+                {project !== selectedProject && <span style={{ width: 10, flexShrink: 0 }} />}
+                <PathLabel text={projectLabel(project)} style={{ flex: 1, direction: "ltr" }} />
+              </button>
+              <button
+                aria-label={`${t("removeProjectHistory", "Remove from list")} · ${projectLabel(project)}`}
+                title={t("removeProjectHistoryHint", "Remove from the project list; keep conversations and files")}
+                onClick={() => {
+                  const next = new Set(hiddenProjects).add(project);
+                  if (updateHidden(next) && (project === selectedProject || project === selectedCwd)) {
+                    setSelectedCwd(recentProjects.find((entry) => entry !== project) ?? null);
+                  }
+                }}
+                style={{
+                  flexShrink: 0,
+                  border: "none",
+                  background: "none",
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                  padding: "0 8px",
+                }}
+              >
+                ×
+              </button>
+            </div>
           ))}
           {visibleProjects.length === 0 && projectFilter.trim() && (
             <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-dim)" }}>
@@ -260,6 +297,28 @@ export function ProjectPicker({
           )}
         </div>
 
+        {hiddenProjects.size > 0 && (
+          <button
+            onClick={() => updateHidden(new Set())}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              textAlign: "left",
+              fontSize: 11,
+              border: "none",
+              background: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+            }}
+          >
+            {t("restoreProjectHistory", "Restore removed projects")} ({hiddenProjects.size})
+          </button>
+        )}
+        {historyError && (
+          <div role="alert" style={{ padding: "8px 10px", color: "var(--text)" }}>
+            {historyError}
+          </div>
+        )}
         {/* Default cwd shortcut */}
         {!customPathOpen && (
           <button

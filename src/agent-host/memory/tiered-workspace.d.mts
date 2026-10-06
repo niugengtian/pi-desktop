@@ -18,6 +18,7 @@ export interface TieredSnapshot {
   files: Record<string, string | Buffer>;
 }
 export function tieredHash(value: string | Buffer): string;
+export function pendingNativeSource(manager: ReadonlySessionManager): Buffer | undefined;
 export function buildTieredSnapshot(manager: ReadonlySessionManager): TieredSnapshot;
 export class TieredWorkspace {
   constructor(boundCwd: string, sessionId: string);

@@ -35,6 +35,8 @@ export default defineConfig([
   },
   {
     // ESM — pi-coding-agent only exports "import" condition
+    // node:sqlite is prefix-only; stripping node: turns it into a missing npm package.
+    removeNodeProtocol: false,
     entry: {
       "agent-host": "src/agent-host/index.ts",
       "plugin-worker": "src/agent-host/plugin-worker.ts",

@@ -1,3 +1,4 @@
+import { ModelSessions } from "./model-sessions.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -22,7 +23,17 @@ const usage = {
 };
 async function fixture(
   t,
-  { accept = true, mutatePayload = false, mutateAtDispatch = false, mutateBeforeReply = false } = {},
+  {
+    accept = true,
+    mutatePayload = false,
+    mutateAtDispatch = false,
+    mutateBeforeReply = false,
+    modelBindings = false,
+    automatic = false,
+    fresh = false,
+    unconfirmed = false,
+    forceEmptyPrompt = false,
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "pi-web-contract-fictional-"));
   const capture = join(root, "captures.jsonl");
@@ -42,11 +53,11 @@ async function fixture(
     import {appendFileSync} from 'node:fs'; import {createHash} from 'node:crypto';
     export async function executeCommand(command,kwargs){
       await kwargs.beforeSubmit(kwargs.prompt);
-      appendFileSync(${JSON.stringify(capture)},JSON.stringify({site:command.site,think:kwargs.think,text:kwargs.prompt,new:kwargs.new,conversation:kwargs.conversation})+'\\n');
+      appendFileSync(${JSON.stringify(capture)},JSON.stringify({site:command.site,think:kwargs.think,text:kwargs.prompt,new:kwargs.new,conversation:kwargs.conversation,images:Array.isArray(kwargs.file)?kwargs.file.length:kwargs.file?1:0})+'\\n');
       const id='fictional_remote'; const url=command.site==='chatgpt'?'https://chatgpt.com/c/'+id:'https://chat.deepseek.com/a/chat/s/'+id;
       await kwargs.onConversation({conversationId:id,conversationUrl:url});
       const response='FICTIONAL_WEB_REPLY_'+command.site;
-      kwargs.onDelivery({promptHash:createHash('sha256').update(kwargs.prompt).digest('hex'),responseHash:createHash('sha256').update(response).digest('hex'),evidence:'adapter-exact-prompt-pair'});
+      if (!${unconfirmed}) kwargs.onDelivery({promptHash:createHash('sha256').update(kwargs.prompt).digest('hex'),responseHash:createHash('sha256').update(response).digest('hex'),evidence:'adapter-exact-prompt-pair'});
       return [{response,conversationId:id,conversationUrl:url}];
     }`,
   );
@@ -72,20 +83,23 @@ async function fixture(
   const manager = SessionManager.create(join(root, "project"), join(root, "native"));
   manager.appendModelChange("opencli-page", "chatgpt-web");
   manager.appendMessage({ role: "system", content: "PRIVATE_PI_SYSTEM", timestamp: 1 });
-  manager.appendMessage({ role: "user", content: "PRIVATE_COLD_OLD_SOURCE", timestamp: 2 });
-  manager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "FICTIONAL_PRESET_NOT_A_MODEL_REPLY" }],
-    provider: "fictional",
-    api: "openai-completions",
-    model: "fake",
-    usage,
-    stopReason: "stop",
-    timestamp: 3,
-  });
-  const kept = manager.appendMessage({ role: "user", content: "当前计划4箱，尚未执行。", timestamp: 4 });
-  manager.appendCompaction("FICTIONAL_WARM 蓝鲸47，蓝色；旧3箱仅是旧计划。", kept, 30);
-  const controller = new TieredBudgetController();
+  if (!fresh) {
+    manager.appendMessage({ role: "user", content: "PRIVATE_COLD_OLD_SOURCE", timestamp: 2 });
+    manager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "FICTIONAL_PRESET_NOT_A_MODEL_REPLY" }],
+      provider: "fictional",
+      api: "openai-completions",
+      model: "fake",
+      usage,
+      stopReason: "stop",
+      timestamp: 3,
+    });
+    const kept = manager.appendMessage({ role: "user", content: "当前计划4箱，尚未执行。", timestamp: 4 });
+    manager.appendCompaction("FICTIONAL_WARM 蓝鲸47，蓝色；旧3箱仅是旧计划。", kept, 30);
+  }
+  const bindings = new ModelSessions();
+  const controller = new TieredBudgetController({ automatic });
   const native = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
@@ -105,7 +119,21 @@ async function fixture(
       noPromptTemplates: true,
       systemPromptOverride: () => "PRIVATE_PI_SYSTEM",
       additionalExtensionPaths: [join(packagePath, "extensions/page-provider.ts")],
-      extensionFactories: [controller.extension()],
+      extensionFactories: [
+        controller.extension(),
+        ...(modelBindings ? [bindings.extension()] : []),
+        ...(forceEmptyPrompt
+          ? [
+              {
+                name: "fictional-forced-prompt",
+                hidden: true,
+                factory(pi) {
+                  pi.on("before_agent_start", () => ({ systemPrompt: "" }));
+                },
+              },
+            ]
+          : []),
+      ],
     },
   });
   const registered = runtime.getRegisteredProviderConfig("opencli-page");
@@ -139,6 +167,7 @@ async function fixture(
     tools: [],
   });
   controller.install(session);
+  if (modelBindings) bindings.install(session);
   t.after(() => session.dispose());
   if (mutatePayload) {
     const original = session.agent.streamFunction;
@@ -174,12 +203,25 @@ async function fixture(
   };
 }
 test(
+  "fresh Web session accepts the SDK's forced system projection before first JSONL flush",
+  { skip: !packagePath },
+  async (t) => {
+    const f = await fixture(t, { automatic: true, modelBindings: true, fresh: true, forceEmptyPrompt: true });
+    await f.session.prompt("Fictional first Web request");
+    const captures = f.readCaptures();
+    assert.equal(captures.length, 1);
+    assert.ok(captures[0].text.includes("Fictional first Web request"));
+    assert.ok(!captures[0].text.includes("PRIVATE_PI_SYSTEM"));
+  },
+);
+
+test(
   "actual SDK + real Page extension + bundled bidirectional bridge: three target wire/receipt/persistence chain",
   { skip: !packagePath },
   async (t) => {
     const f = await fixture(t);
     const before = readFileSync(f.manager.getSessionFile());
-    for (const id of ["chatgpt-web", "deepseek-chat", "deepseek-reasoner"]) {
+    for (const id of ["chatgpt-web", "deepseek-chat", "deepseek-reasoner", "chatgpt-web"]) {
       await f.session.setModel(f.runtime.getModel("opencli-page", id));
       await f.session.prompt("只回答当前计划；不要声称已完成。");
       const last = f.session.messages.at(-1);
@@ -187,20 +229,21 @@ test(
       assert.match(f.session.getLastAssistantText(), /FICTIONAL_WEB_REPLY/);
     }
     const calls = f.readCaptures();
-    assert.equal(calls.length, 3);
-    for (const call of calls) {
+    assert.equal(calls.length, 4);
+    for (const [index, call] of calls.entries()) {
       assert.match(call.text, /FICTIONAL_WARM/);
       assert.match(call.text, /当前计划4箱/);
-      assert.doesNotMatch(call.text, /PRIVATE_COLD|PRIVATE_PI_SYSTEM|PI TASK HANDOFF/);
-      assert.equal(call.new, true);
-      assert.equal(call.conversation, undefined);
+      assert.doesNotMatch(call.text, /PRIVATE_COLD|PI TASK HANDOFF/);
+      assert.match(call.text, /PRIVATE_PI_SYSTEM/);
+      assert.equal(Boolean(call.new), index < 3);
+      assert.equal(call.conversation, index < 3 ? undefined : "fictional_remote");
     }
     assert.equal(calls[1].think, false);
     assert.equal(calls[2].think, true);
     const deliveries = f.manager
       .getBranch()
       .filter((e) => e.type === "custom" && e.customType === "page-provider-tiered-delivery");
-    assert.equal(deliveries.length, 3);
+    assert.equal(deliveries.length, 4);
     assert.ok(
       deliveries.every(
         (e) => e.data.assistantEntryId && e.data.promptHash && e.data.responseHash && e.data.hotSourceEntryIds.length,
@@ -211,7 +254,7 @@ test(
       0,
     );
     assert.deepEqual(readFileSync(f.manager.getSessionFile()).subarray(0, before.length), before);
-    assert.equal(f.approvals.filter((a) => a.title === "Approve this ONE complete Web context?").length, 3);
+    assert.equal(f.approvals.filter((a) => a.title === "Approve this ONE complete Web context?").length, 4);
   },
 );
 for (const [name, options, count] of [
@@ -234,3 +277,47 @@ for (const [name, options, count] of [
       0,
     );
   });
+
+test(
+  "Web image batches reuse the new remote session and finish with the final request",
+  { skip: !packagePath },
+  async (t) => {
+    const f = await fixture(t, { modelBindings: true, automatic: true });
+    const images = Array.from({ length: 9 }, (_, i) => ({
+      type: "image",
+      mimeType: "image/png",
+      data: Buffer.from(`fixture-picture-${i}`).toString("base64"),
+    }));
+    await f.session.prompt("FINAL_WEB_IMAGE_REQUEST", { images });
+    assert.equal(f.session.messages.at(-1).stopReason, "stop", f.session.messages.at(-1).errorMessage);
+    const calls = f.readCaptures();
+    assert.deepEqual(
+      calls.map((c) => c.images),
+      [8, 1, 0],
+    );
+    assert.equal(calls[0].new, true);
+    assert.ok(calls.slice(1).every((c) => !c.new && c.conversation === "fictional_remote"));
+    assert.doesNotMatch(calls[0].text, /FINAL_WEB_IMAGE_REQUEST/);
+    assert.match(calls.at(-1).text, /FINAL_WEB_IMAGE_REQUEST/);
+  },
+);
+
+test(
+  "unconfirmed Web images never advance the delivered cursor or submit another batch",
+  { skip: !packagePath },
+  async (t) => {
+    const f = await fixture(t, { modelBindings: true, automatic: true, unconfirmed: true, fresh: true });
+    const images = Array.from({ length: 9 }, (_, i) => ({
+      type: "image",
+      mimeType: "image/png",
+      data: Buffer.from(`unconfirmed-image-${i}`).toString("base64"),
+    }));
+    await assert.rejects(f.session.prompt("Final request", { images }), /delivery is unconfirmed/);
+    assert.equal(f.readCaptures().length, 1);
+    const saved = f.manager
+      .getEntries()
+      .filter((e) => e.type === "custom" && e.customType === "desktop-model-sessions")
+      .at(-1).data;
+    assert.ok(saved.records.every((record) => record.delivered.length === 0));
+  },
+);

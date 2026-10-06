@@ -747,6 +747,34 @@ function SessionItem({
             </button>
           )}
 
+          <button
+            type="button"
+            aria-label={t("deleteSessionConfirm", "Delete “{title}”?").replace("{title}", title)}
+            title={t("deleteSessionConfirm", "Delete “{title}”?").replace("{title}", title)}
+            onClick={handleDeleteClick}
+            disabled={deleting}
+            style={{
+              background: "transparent",
+              border: 0,
+              padding: 6,
+              color: "var(--text-dim)",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              aria-hidden="true"
+            >
+              <path d="M3 6h18M5 6l1 14h12l1-14M9 6V3h6v3M10 10v6M14 10v6" />
+            </svg>
+          </button>
+
           <div
             ref={actionsRef}
             onBlur={(event) => {

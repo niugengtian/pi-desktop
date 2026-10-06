@@ -70,7 +70,6 @@ test("all three targets serialize the SAME full visible projection, no recent-on
 test("media, pending tools, unknown roles and nonfitting FULL hot/warm refuse, never truncate", () => {
   for (const mutate of [
     (s) => s.pendingToolCallIds.push("pending"),
-    (s) => (s.hot[0].message.content = [{ type: "image", mimeType: "image/png", data: "AA==" }]),
     (s) => (s.hot[0].message.role = "unknown"),
     (s) => (s.hot[0].message.content = "x".repeat(15000)),
     (s) => (s.warm.summary = "x".repeat(5000)),

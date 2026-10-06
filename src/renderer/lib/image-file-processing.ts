@@ -168,6 +168,7 @@ export async function processImageFileBatch(
   const compressImage = dependencies.compressImage ?? compressDraftImage;
   const settled = await Promise.allSettled(
     files.map(async (file) => {
+      if (file.size > 10 * 1024 * 1024) throw new Error("Each image must be at most 10 MB");
       const previewUrl = dependencies.createObjectUrl(file);
       try {
         const dataUrl = await dependencies.readAsDataUrl(file);

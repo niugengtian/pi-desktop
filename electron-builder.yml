@@ -13,12 +13,22 @@ files:
   - LICENSE
   - build/icon.png
   - build/entitlements.mac.plist
+  - from: plugins/page-provider
+    to: plugins/page-provider
+    filter:
+      - package.json
+      - "extensions/**/*.ts"
+      - "src/**/*.mjs"
+      - "src/**/*.ts"
+      - "bridge/**/*.mjs"
   - "!**/*.map"
   - "!**/*.{md,markdown,ts,tsx}"
   - "!**/*.d.{mts,cts}"
   - "!scripts/**"
   - "!src/**"
   - "!dist/**"
+  - "!**/.artifacts/**"
+  - "!**/*.log"
   - "!tsconfig*.json"
   - "!tsup.config.ts"
   - "!vite.config.ts"

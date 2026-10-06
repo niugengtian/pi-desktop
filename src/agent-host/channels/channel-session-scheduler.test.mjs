@@ -35,6 +35,7 @@ test("UI prompts and messaging-channel turns share one serial session scheduler"
     model: undefined,
     modelRuntime: { getModel: () => undefined },
     sessionManager: {
+      getEntries: () => [],
       getHeader: () => ({ cwd: "/tmp/shared-workspace" }),
       appendCustomEntry(customType, data) {
         customEntries.push({ customType, data });
@@ -145,6 +146,7 @@ test("session tool changes use Desktop persistence and can enable tools after an
     sessionId: "session-tools",
     sessionFile: "/tmp/session-tools.jsonl",
     sessionManager: {
+      getEntries: () => [],
       getHeader: () => ({ cwd: "/tmp" }),
     },
     agent: { state: { messages: [], systemPrompt: "initial" } },
@@ -192,7 +194,7 @@ test("legacy JSONL session tools use the latest valid state for sidecar migratio
 test("session destroy notifies every teardown owner once and isolates failures", () => {
   const wrapper = new AgentSessionWrapper({
     sessionId: "destroy-session",
-    sessionManager: { getHeader: () => ({ cwd: "/tmp" }) },
+    sessionManager: { getEntries: () => [], getHeader: () => ({ cwd: "/tmp" }) },
     agent: { state: { messages: [] } },
   });
   const calls = [];
@@ -218,7 +220,7 @@ test("a transient extension binding failure is retried by the next prompt", asyn
   const prompts = [];
   const inner = {
     sessionId: "extension-retry-session",
-    sessionManager: { getHeader: () => ({ cwd: "/tmp" }) },
+    sessionManager: { getEntries: () => [], getHeader: () => ({ cwd: "/tmp" }) },
     agent: { state: { messages: [] } },
     extensionRunner: {},
     async bindExtensions() {
@@ -246,7 +248,7 @@ test("concurrent session disposal aborts and releases the inner agent exactly on
   const calls = [];
   const wrapper = new AgentSessionWrapper({
     sessionId: "dispose-session",
-    sessionManager: { getHeader: () => ({ cwd: "/tmp" }) },
+    sessionManager: { getEntries: () => [], getHeader: () => ({ cwd: "/tmp" }) },
     agent: {
       state: { messages: [] },
       async waitForIdle() {

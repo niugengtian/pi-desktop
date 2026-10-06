@@ -1,3 +1,4 @@
+import { isImageBlock, validateImage, textBudgetValue } from "./tiered-images.mjs";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { nativeBudgetView } from "./tiered-codex-budget.mjs";
 
@@ -27,7 +28,7 @@ function validatePolicy(policy) {
  * Applicable only under the caller's explicit byte-BPE/text protocol contract.
  */
 export function estimateEnvelope(value, messageCount = 0, toolCount = 0) {
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(textBudgetValue(value));
   if (typeof serialized !== "string") fail("invalid-envelope");
   const wireBytes = Buffer.byteLength(serialized, "utf8");
   if (wireBytes > 8 * 1024 * 1024) fail("measurement-size-limit");
@@ -45,6 +46,10 @@ export function wireText(message) {
   if (!Array.isArray(message.content)) fail("unsupported-content");
   return message.content
     .map((block) => {
+      if (isImageBlock(block)) {
+        validateImage(block);
+        return "";
+      }
       if (block?.type !== "text" || typeof block.text !== "string") fail("media-or-unsupported-content");
       return block.text;
     })
@@ -81,8 +86,6 @@ export function planWireBudget(payload, model, { warmText, operation = "chat", p
   if (!model || model.api !== "openai-completions" || !integer(model.contextWindow))
     fail("unsupported-model-window-or-api");
   if (!payload || payload.model !== model.id || !Array.isArray(payload.messages)) fail("payload-model-or-messages");
-  if (payload.messages[0]?.role !== "system" && payload.messages[0]?.role !== "developer")
-    fail("missing-leading-protocol");
   if (payload.tools !== undefined && !Array.isArray(payload.tools)) fail("invalid-tool-schema-list");
   checkChain(payload.messages);
   const fields = ["max_tokens", "max_completion_tokens"].filter((key) => payload[key] !== undefined);
@@ -158,7 +161,7 @@ export function nativeBudgetHints(messages, model, sdkEstimate, policy = TIERED_
   // Original signatures/images can have non-text token semantics: do not infer tokens from base64.
   for (const message of messages)
     for (const block of Array.isArray(message.content) ? message.content : []) {
-      if (block.type === "image" || (block.type !== "text" && block.type !== "toolCall" && block.type !== "thinking"))
+      if (block.type !== "text" && block.type !== "toolCall" && block.type !== "thinking")
         fail("unsupported-native-content");
       if (block.type === "thinking" && (block.thinkingSignature || block.redacted)) fail("opaque-thinking-content");
     }

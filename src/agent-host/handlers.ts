@@ -58,7 +58,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   initializeChannels(channelManager);
   const managedProcesses = initializeManagedProcessService(server);
   const worktreeHandlers = createWorktreeHandlers(managedProcesses);
-  const sessionHandlers = createSessionHandlers({ server, managedProcesses, clearSessionEventBinding: bindings.clear });
+
   const herdr = initializeHerdrBridge(server, { assertAllowedPath: (target) => assertPathAllowed(target) });
   const stopHerdrToolSync = herdr.subscribeRuntime(() => syncDesktopToolsForAllSessions());
 
@@ -98,7 +98,11 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       /* ignore */
     }
   });
-
+  const sessionHandlers = createSessionHandlers({
+    server,
+    managedProcesses,
+    clearSessionEventBinding: bindings.clear,
+  });
   const agentHandlers = createAgentHandlers({
     server,
     bindEvents: (session, id) => bindings.ensure(session, id),

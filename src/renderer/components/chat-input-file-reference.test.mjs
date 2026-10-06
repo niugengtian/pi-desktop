@@ -453,7 +453,8 @@ test("streaming image queue attempts keep the complete draft in the composer", a
   await act(async () => renderer.unmount());
 });
 
-test("a fifth image is rejected with the image limit message instead of a storage failure", async () => {
+test("a ninth image stays in the active composer while disk persistence reports its smaller quota", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const draftKey = `image-limit-${Date.now()}`;
   storedValues.set(
     `pi-desktop-draft:${draftKey}`,
@@ -502,19 +503,27 @@ test("a fifth image is rejected with the image limit message instead of a storag
       );
     });
     await act(async () => {
-      handle.current.addFiles([{ name: "fifth.png", type: "image/png" }]);
+      handle.current.addFiles(
+        Array.from({ length: 5 }, (_, index) => ({ name: `image-${index + 5}.png`, type: "image/png", size: 1 })),
+      );
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    assert.equal(renderer.root.findAllByType("img").length, 4);
+    await act(async () => t.mock.timers.tick(500));
+
+    assert.equal(renderer.root.findAllByType("img").length, 9);
+    assert.equal(JSON.parse(storedValues.get(`pi-desktop-draft:${draftKey}`)).images.length, 4);
     const alerts = renderer.root.findAll((node) => node.props?.role === "alert").map(renderedText);
-    assert.ok(alerts.some((text) => text.includes("A draft can save up to 4 images")));
     assert.equal(
-      alerts.some((text) => text.includes("could not be saved on this device")),
+      alerts.some((text) => text.includes("A draft can save up to 4 images")),
       false,
     );
-    assert.deepEqual(revoked, ["blob:fifth.png"]);
+    assert.equal(
+      alerts.some((text) => text.includes("could not be saved on this device")),
+      true,
+    );
+    assert.deepEqual(revoked, []);
     await act(async () => renderer.unmount());
   } finally {
     if (fileReaderDescriptor) Object.defineProperty(globalThis, "FileReader", fileReaderDescriptor);

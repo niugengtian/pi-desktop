@@ -3,13 +3,15 @@ import test from "node:test";
 import {
   boundedSummary,
   buildIncrementalHandoff,
+  buildWebContextRequest,
   checkpointFrom,
-  consumeHandoffAcknowledgement,
+  consumeLegacyHandoffAcknowledgement,
   createCheckpoint,
   planConversationRoute,
   sha256Text,
   shouldDedupeRetry,
   verifiedOutcomeSummary,
+  validateWebPrompt,
 } from "../src/continuity.mjs";
 
 function checkpoint(sequence, modelId = "deepseek-chat") {
@@ -23,6 +25,87 @@ function checkpoint(sequence, modelId = "deepseek-chat") {
     createdAt: `2026-09-24T00:00:0${sequence}.000Z`,
   });
 }
+
+test("web request shares only the preceding exchange, never system, tools, summary or older turns", () => {
+  const context = {
+    systemPrompt: "PRIVATE SYSTEM SECRET",
+    messages: [
+      { role: "system", content: "PRIVATE SYSTEM SECRET" },
+      { role: "user", content: [{ type: "text", text: "OLD PRIVATE HISTORY" }] },
+      { role: "assistant", content: [{ type: "text", text: "older reply" }] },
+      { role: "user", content: [{ type: "text", text: "What is the marker?" }] },
+      {
+        role: "assistant",
+        provider: "openai-codex",
+        content: [
+          { type: "thinking", thinking: "PRIVATE REASONING" },
+          { type: "toolCall", arguments: { secret: "PRIVATE TOOL ARGUMENT" } },
+          { type: "text", text: "MARKER-123" },
+        ],
+      },
+      { role: "toolResult", toolName: "read", content: [{ type: "text", text: "PRIVATE FILE CONTENTS" }] },
+      { role: "user", content: [{ type: "text", text: "Next step" }] },
+    ],
+  };
+  const result = buildWebContextRequest(context, "Next step");
+  assert.match(result, /Next step/);
+  for (const secret of [
+    "PRIVATE SYSTEM SECRET",
+    "OLD PRIVATE HISTORY",
+    "PRIVATE REASONING",
+    "PRIVATE TOOL ARGUMENT",
+    "PRIVATE FILE CONTENTS",
+  ]) {
+    assert.doesNotMatch(result, new RegExp(secret));
+  }
+  assert.doesNotMatch(result, /MARKER-123/); // Tool result interrupts the previous exchange.
+  const adjacent = buildWebContextRequest(
+    { messages: context.messages.filter((m) => m.role !== "toolResult") },
+    "Next step",
+  );
+  assert.match(adjacent, /MARKER-123/);
+  assert.match(adjacent, /What is the marker/);
+  assert.doesNotMatch(adjacent, /PRIVATE SYSTEM SECRET|OLD PRIVATE HISTORY|PRIVATE REASONING|PRIVATE TOOL ARGUMENT/);
+});
+
+test("web context omits oversized earlier texts, excludes image bytes, and fails closed on current request overflow", () => {
+  const context = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "s".repeat(2_100) },
+          { type: "image", mimeType: "image/png", data: "SECRET-IMAGE-DATA" },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(2_100) }] },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
+    ],
+  };
+  const result = buildWebContextRequest(context, "continue");
+  assert.match(result, /Previous user text exceeds/);
+  assert.match(result, /Previous assistant text exceeds/);
+  assert.match(result, /Earlier image not replayed/);
+  assert.doesNotMatch(result, /SECRET-IMAGE-DATA|s{100}|a{100}/);
+  assert.throws(() => buildWebContextRequest(context, "continue", 100), /Shorten the current request/);
+  assert.throws(
+    () => validateWebPrompt(`${result}${"x".repeat(100)}`, result.length + 50),
+    /no partial history was sent/,
+  );
+});
+
+test("web retry reconstructs the same prompt for adapter dedupe", () => {
+  const user = (text) => ({ role: "user", content: [{ type: "text", text }] });
+  const base = [user("old"), { role: "assistant", content: [{ type: "text", text: "done" }] }];
+  const first = buildWebContextRequest({ messages: [...base, user("retry me")] }, "retry me");
+  const retry = buildWebContextRequest(
+    {
+      messages: [...base, user("retry me"), { role: "assistant", stopReason: "error", content: [] }, user("retry me")],
+    },
+    "retry me",
+  );
+  assert.equal(retry, first);
+});
 
 test("createCheckpoint stores bounded summaries and hashes instead of full bodies", () => {
   const request = `start ${"x".repeat(2_000)}`;
@@ -86,6 +169,10 @@ test("retry deduplication is enabled only after a matching failed turn", () => {
 test("handoffs do not treat unexecuted web-model tool markup as completed progress", () => {
   const fakeAction = '<｜｜DSML｜｜ invoke name="bash">git push</｜｜DSML｜｜ invoke>';
   assert.match(verifiedOutcomeSummary(fakeAction), /Unverified action markup omitted/);
+  assert.equal(
+    verifiedOutcomeSummary("PAGE_PROVIDER_TURN_UNCONFIRMED"),
+    "[Unconfirmed web reply omitted from handoff.]",
+  );
   assert.equal(verifiedOutcomeSummary("A verified textual conclusion"), "A verified textual conclusion");
 
   const unsafe = checkpoint(1);
@@ -116,7 +203,8 @@ test("buildIncrementalHandoff sends only checkpoints after the target cursor", (
   assert.match(bundle.text, /request 2/);
   assert.match(bundle.text, /request 3/);
   assert.match(bundle.text, /Current request\ncontinue with the next step/);
-  assert.match(bundle.text, /PI_HANDOFF_ACK task=task-1 checkpoint=3/);
+  assert.match(bundle.text, /follow the current request's output requirements exactly/);
+  assert.doesNotMatch(bundle.text, /PI_HANDOFF_ACK/);
 });
 
 test("buildIncrementalHandoff is absent when the target is current", () => {
@@ -152,26 +240,35 @@ test("handoff is tail-bounded and reports omitted checkpoints", () => {
   assert.match(bundle.text, /Checkpoint 8/);
 });
 
-test("consumeHandoffAcknowledgement validates and removes only the expected marker", () => {
-  const success = consumeHandoffAcknowledgement(
+test("consumeLegacyHandoffAcknowledgement removes only the expected legacy marker", () => {
+  const success = consumeLegacyHandoffAcknowledgement(
     "PI_HANDOFF_ACK task=task-1 checkpoint=3\n\nWork continues.",
     "task-1",
     3,
   );
   assert.deepEqual(success, {
-    acknowledged: true,
+    matched: true,
     markdown: "Work continues.",
     acknowledgement: "PI_HANDOFF_ACK task=task-1 checkpoint=3",
   });
 
-  const escaped = consumeHandoffAcknowledgement(
+  const escaped = consumeLegacyHandoffAcknowledgement(
     "PI\\_HANDOFF\\_ACK task=task-1 checkpoint=3\nWork continues.",
     "task-1",
     3,
   );
-  assert.equal(escaped.acknowledged, true);
+  assert.equal(escaped.matched, true);
   assert.equal(escaped.markdown, "Work continues.");
 
-  const wrong = consumeHandoffAcknowledgement("PI_HANDOFF_ACK task=other checkpoint=3\nWork continues.", "task-1", 3);
-  assert.equal(wrong.acknowledged, false);
+  const ordinary = consumeLegacyHandoffAcknowledgement("DESKTOP-SWITCH-68031", "task-1", 3);
+  assert.equal(ordinary.matched, false);
+  assert.equal(ordinary.markdown, "DESKTOP-SWITCH-68031");
+
+  const wrong = consumeLegacyHandoffAcknowledgement(
+    "PI_HANDOFF_ACK task=other checkpoint=3\nWork continues.",
+    "task-1",
+    3,
+  );
+  assert.equal(wrong.matched, false);
+  assert.match(wrong.markdown, /^PI_HANDOFF_ACK task=other/);
 });

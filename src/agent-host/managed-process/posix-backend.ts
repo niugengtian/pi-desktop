@@ -14,7 +14,11 @@ import type {
   PreparedManagedProcessLaunch,
   StartedContainment,
 } from "./backend.ts";
-import type { ManagedProcessWorkerEvent, ManagedProcessWorkerRequest } from "./protocol.ts";
+import type {
+  ManagedProcessWorkerBootstrap,
+  ManagedProcessWorkerEvent,
+  ManagedProcessWorkerRequest,
+} from "./protocol.ts";
 
 const WORKER_START_TIMEOUT_MS = 10_000;
 
@@ -27,6 +31,7 @@ function deferred(): Deferred {
     resolve = ok;
     reject = fail;
   });
+  void promise.catch(() => undefined); // Either phase can fail before its caller begins awaiting it.
   return { promise, resolve, reject };
 }
 
@@ -76,11 +81,15 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
   > &
     Omit<PosixManagedProcessBackendOptions, "platform" | "workerEntryPath" | "hostInstanceId">;
   private readonly events = new EventEmitter();
+  private readonly ready = deferred();
   private readonly started = deferred();
   private readonly exited = deferred();
   private process?: ChildProcess;
   private prepared?: PreparedContainment;
   private targetExit?: { code: number | null; signal?: string };
+  private bootstrap?: ManagedProcessWorkerBootstrap;
+  private commitSent = false;
+  private committed = false;
   private stopRequested = false;
   private exitReported = false;
 
@@ -129,6 +138,7 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
     );
     worker.on("message", (message: ManagedProcessWorkerEvent) => this.handleWorkerEvent(message));
     worker.once("error", (error) => {
+      this.ready.reject(new Error("Managed process worker failed to prepare"));
       this.started.reject(new Error("Managed process worker failed to start"));
       this.events.emit("event", {
         type: "error",
@@ -138,25 +148,42 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
     });
     worker.once("close", (code, closeSignal) => void this.handleWorkerClose(code, closeSignal));
 
-    const bootstrap: ManagedProcessWorkerRequest = {
+    const bootstrap: ManagedProcessWorkerBootstrap = {
       type: "bootstrap",
+      protocol: 2,
+      nonce: randomUUID(),
       processId: input.processId,
       runId: input.runId,
       cwd: input.cwd,
       command: input.command,
       shell: input.shell,
     };
-    worker.send(bootstrap);
-    await withTimeout(this.started.promise, WORKER_START_TIMEOUT_MS, "Managed process worker did not start");
-    if (signal?.aborted) {
+    this.bootstrap = bootstrap;
+    const onAbort = () => {
+      void this.stop("force", "host").catch(() => undefined); // Preparation still verifies/disposes its worker.
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    let fingerprint: string | null;
+    try {
+      worker.send(bootstrap);
+      await withTimeout(this.ready.promise, WORKER_START_TIMEOUT_MS, "Managed process worker did not prepare");
+      if (signal?.aborted || this.stopRequested) throw new Error("Managed process start was cancelled");
+      if (!worker.pid) throw new Error("Managed process worker has no PID");
+      fingerprint = await (this.options.fingerprint ?? getProcessStartFingerprint)(worker.pid);
+      if (!fingerprint) throw new Error("Could not verify managed process identity");
+      if (
+        signal?.aborted ||
+        this.stopRequested ||
+        !worker.connected ||
+        worker.exitCode !== null ||
+        worker.signalCode !== null
+      )
+        throw new Error("Managed process preparation lost its live owner");
+    } catch (error) {
       await this.dispose();
-      throw new Error("Managed process start was cancelled");
-    }
-    if (!worker.pid) throw new Error("Managed process worker has no PID");
-    const fingerprint = await (this.options.fingerprint ?? getProcessStartFingerprint)(worker.pid);
-    if (!fingerprint) {
-      await terminateProcessTree(worker, 500);
-      throw new Error("Could not verify managed process identity");
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
     const prepared: PreparedContainment = {
       reaper: {
@@ -165,10 +192,10 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
         processId: input.processId,
         runId: input.runId,
         hostInstanceId: this.options.hostInstanceId,
-        pid: worker.pid,
-        pgid: worker.pid,
+        pid: worker.pid!,
+        pgid: worker.pid!,
         startFingerprint: fingerprint,
-        nonce: randomUUID(),
+        nonce: bootstrap.nonce,
         createdAt: (this.options.now ?? Date.now)(),
       },
       privateState: { pid: worker.pid },
@@ -182,16 +209,32 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
       prepared !== this.prepared ||
       prepared.reaper.platform !== "posix" ||
       !Number.isSafeInteger(journalRevision) ||
-      journalRevision <= 0
+      journalRevision <= 0 ||
+      this.commitSent ||
+      this.stopRequested ||
+      !this.process?.connected ||
+      this.process.exitCode !== null ||
+      this.process.signalCode !== null
     ) {
       throw new Error("Invalid POSIX prepared containment");
     }
+    this.commitSent = true;
+    this.process!.send({
+      type: "commit",
+      processId: prepared.reaper.processId,
+      runId: prepared.reaper.runId,
+      nonce: prepared.reaper.nonce,
+      journalRevision,
+    } satisfies ManagedProcessWorkerRequest);
+    await withTimeout(this.started.promise, WORKER_START_TIMEOUT_MS, "Managed shell did not start after commit");
+    this.committed = true;
     return { started: true };
   }
 
   write(input: { text: string; appendNewline: boolean; close: boolean }): void {
     const worker = this.process;
-    if (!worker?.connected) throw new Error("Managed process worker control pipe is closed");
+    if (!this.committed || !worker?.connected)
+      throw new Error("Managed process is not committed or its control pipe is closed");
     worker.send({ type: "stdin", ...input } satisfies ManagedProcessWorkerRequest);
   }
 
@@ -209,7 +252,13 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
   async dispose(): Promise<void> {
     const worker = this.process;
     if (!worker || worker.exitCode !== null || worker.signalCode !== null) return;
-    this.stopRequested = true;
+    try {
+      await this.stop("force", "host");
+      await withTimeout(this.exited.promise, 1_000, "Worker stop was not acknowledged");
+      return;
+    } catch {
+      /* Retain the existing process-group fallback if IPC did not settle. */
+    }
     await terminateProcessTree(worker, 1_000);
     await Promise.race([
       this.exited.promise,
@@ -222,8 +271,21 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
 
   private handleWorkerEvent(message: ManagedProcessWorkerEvent): void {
     if (!message || typeof message !== "object") return;
+    if (message.type === "prepared") {
+      if (
+        !this.bootstrap ||
+        this.commitSent ||
+        message.processId !== this.bootstrap.processId ||
+        message.runId !== this.bootstrap.runId ||
+        message.nonce !== this.bootstrap.nonce
+      ) {
+        this.ready.reject(new Error("Managed worker preparation identity mismatch"));
+      } else this.ready.resolve();
+      return;
+    }
     if (message.type === "started") {
-      if (!Number.isSafeInteger(message.shellPid) || message.shellPid <= 1) {
+      if (!this.commitSent || !Number.isSafeInteger(message.shellPid) || message.shellPid <= 1) {
+        this.ready.reject(new Error("Managed shell started without a matching commit"));
         this.started.reject(new Error("Managed shell PID is invalid"));
       } else {
         this.started.resolve();
@@ -244,6 +306,7 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
         subcode: message.code,
         message: message.message,
       } satisfies ManagedProcessBackendEvent);
+      this.ready.reject(new Error("Managed process worker reported an error"));
       this.started.reject(new Error("Managed process worker reported an error"));
       return;
     }
@@ -252,6 +315,7 @@ export class PosixManagedProcessBackend implements ManagedProcessBackend {
   }
 
   private async handleWorkerClose(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+    this.ready.reject(new Error("Managed process worker exited during preparation"));
     this.started.reject(new Error("Managed process worker exited during startup"));
     const worker = this.process;
     const processGroupId = this.prepared?.reaper.platform === "posix" ? this.prepared.reaper.pgid : worker?.pid;

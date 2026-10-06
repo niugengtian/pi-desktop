@@ -44,9 +44,13 @@ test("Desktop selections reject unsupported tools and preserve ordinary extensio
   assert.throws(() => validateDesktopToolNames([1]), /array of strings/);
   assert.deepEqual(filterDesktopToolNames(["powershell", " read ", "read"]), ["read"]);
   let persisted = false;
-  const wrapper = new AgentSessionWrapper({ agent: {}, sessionId: "fixture" }, undefined, () => {
-    persisted = true;
-  });
+  const wrapper = new AgentSessionWrapper(
+    { agent: {}, sessionId: "fixture", sessionManager: { getEntries: () => [] } },
+    undefined,
+    () => {
+      persisted = true;
+    },
+  );
   try {
     await assert.rejects(wrapper.send({ type: "set_tools", toolNames: ["powershell"] }), /not supported/);
     assert.equal(persisted, false);

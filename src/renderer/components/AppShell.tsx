@@ -524,7 +524,7 @@ export function AppShell({
 
   const handleSelectSession = useCallback(
     (session: SessionInfo, isRestore = false) => {
-      beginSessionLoadTrace(session.id, isRestore ? "restore" : "selection");
+      if (!isRestore) beginSessionLoadTrace(session.id, isRestore ? "restore" : "selection");
       setNewSessionCwd(null);
       setSelectedSession(session);
       setSessionKey((k) => k + 1);
@@ -1037,18 +1037,25 @@ export function AppShell({
                 ›_
               </button>
             )}
-            <SessionInfoPanel
-              store={presentationStore}
-              showChat={showChat}
-              activeTopPanel={activeTopPanel}
-              toggleTopPanel={toggleTopPanel}
-              rightPanelOpen={rightPanelOpen}
-              isMobile={isMobile}
-            />
+            {
+              <SessionInfoPanel
+                store={presentationStore}
+                showChat={showChat}
+                activeTopPanel={activeTopPanel}
+                toggleTopPanel={toggleTopPanel}
+                rightPanelOpen={rightPanelOpen}
+                isMobile={isMobile}
+              />
+            }
           </div>
-
-          {/* Chat content */}
-          <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
             {showChat ? (
               <SessionProfiler key={sessionKey} id="ChatWindow">
                 <ChatWindow

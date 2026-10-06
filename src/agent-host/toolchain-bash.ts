@@ -1,4 +1,4 @@
-import { createLocalBashOperations, type BashToolOptions } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, type BashOperations, type BashToolOptions } from "@earendil-works/pi-coding-agent";
 import type { ToolExecutionContext } from "../shared/toolchains/types.ts";
 import { toolchainRuntime, type ToolchainRuntime } from "./toolchain-runtime.ts";
 import { sanitizeToolEnvironment } from "./tool-environment.ts";
@@ -9,6 +9,7 @@ export function createToolchainBashOptions(
   runtime: ToolchainRuntime = toolchainRuntime,
   commandPrefix?: string,
   beforeExec?: (command: string) => Promise<void>,
+  wrapExec?: (execute: BashOperations["exec"]) => BashOperations["exec"],
 ): BashToolOptions {
   const descriptor = context.commands["shell.bash"];
   if (!descriptor) {
@@ -29,7 +30,7 @@ export function createToolchainBashOptions(
     operations: {
       async exec(command, cwd, options) {
         await beforeExec?.(command);
-        return local.exec(command, cwd, options);
+        return (wrapExec ? wrapExec(local.exec) : local.exec)(command, cwd, options);
       },
     },
     spawnHook(spawnContext) {

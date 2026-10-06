@@ -161,7 +161,7 @@ test("late extension tool registration cannot reactivate a no-tools session", as
   let active = [];
   const inner = {
     sessionId: "late-tool-fixture",
-    sessionManager: { getHeader: () => ({ cwd: "/fixture" }) },
+    sessionManager: { getEntries: () => [], getHeader: () => ({ cwd: "/fixture" }) },
     agent: { state: { messages: [] } },
     extensionRunner: {},
     getActiveToolNames: () => [...active],
@@ -185,7 +185,7 @@ test("tool queries wait for late extension registration and return the enforced 
   let active = [];
   const inner = {
     sessionId: "late-tool-query",
-    sessionManager: { getHeader: () => ({ cwd: "/fixture" }) },
+    sessionManager: { getEntries: () => [], getHeader: () => ({ cwd: "/fixture" }) },
     agent: { state: { messages: [] } },
     extensionRunner: {},
     getAllTools: () => [{ name: "mcp_fixture_tool", description: "fixture" }],

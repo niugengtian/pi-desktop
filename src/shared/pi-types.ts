@@ -1,5 +1,6 @@
 import type {
   AgentSessionEvent,
+  ExtensionRunner,
   SessionManager,
   SettingsManager,
   SlashCommandInfo,
@@ -15,6 +16,8 @@ export interface ContextUsage {
 export interface ModelLike {
   id: string;
   provider: string;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface ToolInfo {
@@ -65,6 +68,8 @@ interface ResourceLoaderLike {
 }
 
 interface ExtensionRunnerLike {
+  getCommand?: ExtensionRunner["getCommand"];
+  createCommandContext?: ExtensionRunner["createCommandContext"];
   getRegisteredCommands(): Array<{
     invocationName: string;
     description?: string;
@@ -146,6 +151,7 @@ export interface AgentSessionLike {
 
   readonly bindExtensions?: unknown;
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
+  refreshContext(): void;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   prompt(
     text: string,
