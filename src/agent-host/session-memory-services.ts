@@ -54,7 +54,7 @@ export async function createDesktopSessionServices(
         model.api === "openai-codex-responses" &&
         /^http:\/\/127\.0\.0\.1:\d+(?:\/|$)/.test(model.baseUrl ?? "")),
   });
-  const modelSessions = new ModelSessions({ acquire: (provider) => providerAccounts().acquire(provider) });
+  const modelSessions = new ModelSessions({ acquire: (provider) => providerAccounts(agentDir).acquire(provider) });
   const extensionFactories = [
     modelSessions.extension(),
     createLegacyChannelContextExtension(),

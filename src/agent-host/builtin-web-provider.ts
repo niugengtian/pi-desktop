@@ -47,6 +47,6 @@ export async function createDesktopAgentServices(options: Parameters<typeof crea
     ...options,
     resourceLoaderOptions: desktopResourceLoaderOptions(options.resourceLoaderOptions),
   });
-  await providerAccounts().install(services.modelRuntime);
+  await providerAccounts(options.agentDir).install(services.modelRuntime);
   return services;
 }

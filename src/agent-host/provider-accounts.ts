@@ -180,6 +180,7 @@ export class ProviderAccounts {
     return this.state.accounts.find((row) => row.provider === provider);
   }
   defaultProvider(provider: string) {
+    if (!["openai-codex", "anthropic"].includes(provider) && !provider.startsWith(PREFIX)) return provider;
     const kind =
       this.find(provider)?.kind ??
       (provider === "openai-codex" ? "codex" : provider === "anthropic" ? "anthropic-api" : undefined);
@@ -419,7 +420,13 @@ export class ProviderAccounts {
     await runtime.refresh({ allowNetwork: false });
   }
 }
-let singleton: ProviderAccounts | undefined;
-export function providerAccounts() {
-  return (singleton ??= new ProviderAccounts());
+const stores = new Map<string, ProviderAccounts>();
+export function providerAccounts(agentDir = getAgentDir()) {
+  const directory = path.resolve(agentDir);
+  let store = stores.get(directory);
+  if (!store) {
+    store = new ProviderAccounts(directory);
+    stores.set(directory, store);
+  }
+  return store;
 }

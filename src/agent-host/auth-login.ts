@@ -261,9 +261,10 @@ export function createAuthLoginService(
           } else {
             emitTerminal({
               type: "error",
-              message: providerAccounts().find(provider)
-                ? "Account login failed. Retry this account's official login flow."
-                : msg,
+              message:
+                createModelRuntime === accountLoginRuntime && providerAccounts().find(provider)
+                  ? "Account login failed. Retry this account's official login flow."
+                  : msg,
             });
           }
         } finally {
