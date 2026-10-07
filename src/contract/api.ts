@@ -228,6 +228,10 @@ export interface Api {
     params: { id: string; name: string };
     result: { ok: true };
   };
+  "sessions.modelSessionBindings": {
+    params: { id: string };
+    result: { bindings: Array<{ model: string; id: string; active: boolean; archived: boolean }> };
+  };
   "sessions.pageProviderBindings": {
     params: { id: string };
     result: {

@@ -37,6 +37,7 @@ import { emitIndexedSessionChange } from "../session-change";
 import { callMain } from "../parent-rpc";
 import type { ManagedProcessService } from "../managed-process/service";
 import { readPageProviderBindings } from "../page-provider-bindings";
+import { readModelSessionBindings } from "../model-session-bindings";
 
 type SessionHandlers = {
   list: NonNullable<ApiHandler["sessions.list"]>;
@@ -48,6 +49,7 @@ type SessionHandlers = {
   delete: NonNullable<ApiHandler["sessions.delete"]>;
   rename: NonNullable<ApiHandler["sessions.rename"]>;
   pageProviderBindings: NonNullable<ApiHandler["sessions.pageProviderBindings"]>;
+  modelSessionBindings: NonNullable<ApiHandler["sessions.modelSessionBindings"]>;
 };
 
 export function createSessionHandlers({
@@ -327,6 +329,13 @@ export function createSessionHandlers({
         deleted: true,
       });
       return { ok: true as const };
+    },
+
+    modelSessionBindings: async (params) => {
+      const { id } = params as { id: string };
+      const filePath = await resolveSessionPath(id);
+      if (!filePath) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
+      return { bindings: readModelSessionBindings(filePath, id) };
     },
 
     pageProviderBindings: async (params) => {

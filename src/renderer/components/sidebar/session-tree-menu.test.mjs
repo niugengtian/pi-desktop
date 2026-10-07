@@ -8,7 +8,7 @@ test("session action menu measures its rendered size after async content changes
   assert.match(source, /useLayoutEffect\(\(\) => \{/);
   assert.match(source, /menuWidth: menu\.offsetWidth/);
   assert.match(source, /menuHeight: menu\.offsetHeight/);
-  assert.match(source, /\[actionsOpen, providerBindings\]/);
+  assert.match(source, /\[actionsOpen, providerBindings, modelBindings\]/);
   assert.doesNotMatch(source, /estimatedHeight/);
 });
 

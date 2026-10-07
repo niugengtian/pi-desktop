@@ -1,4 +1,5 @@
 import { call } from "@/lib/api-client";
+import type { Api } from "@contract/api";
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
@@ -10,11 +11,9 @@ import { getSessionDisplayTitle } from "@/lib/session-list";
 import { formatDateTime, formatNumber, formatRelativeDateTime } from "@/lib/locale-format";
 import { floatingMenuPosition } from "@/lib/floating-menu-position";
 
-type PageProviderBinding = {
-  modelId: string;
-  conversationId: string;
-  conversationUrl?: string;
-  provisional: boolean;
+type PageProviderBinding = Api["sessions.pageProviderBindings"]["result"]["bindings"][number];
+type ModelSessionBinding = Api["sessions.modelSessionBindings"]["result"]["bindings"][number] & {
+  label: string;
 };
 
 export interface SessionTreeNode {
@@ -249,6 +248,7 @@ function SessionItem({
   const [deleting, setDeleting] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [providerBindings, setProviderBindings] = useState<PageProviderBinding[] | null>(null);
+  const [modelBindings, setModelBindings] = useState<ModelSessionBinding[] | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -391,16 +391,31 @@ function SessionItem({
       viewportHeight: window.innerHeight,
     });
     setMenuPosition((current) => (current?.top === next.top && current.left === next.left ? current : next));
-  }, [actionsOpen, providerBindings]);
+  }, [actionsOpen, providerBindings, modelBindings]);
 
   const loadProviderBindings = useCallback(async () => {
     setProviderBindings(null);
+    setModelBindings(null);
     try {
-      const result = await call("sessions.pageProviderBindings", { id: session.id });
-      setProviderBindings(result.bindings);
+      const [page, model, accounts] = await Promise.all([
+        call("sessions.pageProviderBindings", { id: session.id }),
+        call("sessions.modelSessionBindings", { id: session.id }),
+        call("accounts.list").catch(() => ({ accounts: [] })),
+      ]);
+      const names = new Map(accounts.accounts.map((account) => [account.provider, account.name]));
+      setProviderBindings(page.bindings);
+      setModelBindings(
+        model.bindings.map((binding) => {
+          const divider = binding.model.indexOf("/");
+          const provider = binding.model.slice(0, divider);
+          const modelId = binding.model.slice(divider + 1);
+          return { ...binding, label: `${names.get(provider) ?? provider} · ${modelId}` };
+        }),
+      );
     } catch (error) {
-      console.error("failed to load Page Provider bindings", error);
+      console.error("failed to load session bindings", error);
       setProviderBindings([]);
+      setModelBindings([]);
     }
   }, [session.id]);
 
@@ -875,11 +890,35 @@ function SessionItem({
                     </svg>
                     {t("copyPiSessionId", "Copy PI session ID")}
                   </button>
+                  {modelBindings === null ? (
+                    <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>正在加载模型会话…</div>
+                  ) : modelBindings.length === 0 ? (
+                    <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>暂无模型会话记录</div>
+                  ) : (
+                    modelBindings.map((binding) => (
+                      <button
+                        key={`${binding.model}:${binding.id}`}
+                        type="button"
+                        role="menuitem"
+                        className="session-menu-item"
+                        title={`${binding.model}\n${binding.id}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeActionsMenu();
+                          void copyText(binding.id);
+                        }}
+                        style={sessionMenuItemStyle}
+                      >
+                        <span aria-hidden="true">#</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          复制 {binding.label} 会话 ID{binding.archived ? "（历史）" : binding.active ? "（当前）" : ""}
+                        </span>
+                      </button>
+                    ))
+                  )}
                   {providerBindings === null ? (
                     <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>正在加载网页会话…</div>
-                  ) : providerBindings.length === 0 ? (
-                    <div style={{ padding: "6px 9px", color: "var(--text-dim)", fontSize: 11 }}>暂无网页会话绑定</div>
-                  ) : (
+                  ) : providerBindings.length === 0 ? null : (
                     providerBindings.map((binding) => (
                       <div key={`${binding.modelId}:${binding.conversationId}`}>
                         <button

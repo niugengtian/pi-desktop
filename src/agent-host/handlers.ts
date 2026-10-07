@@ -226,6 +226,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "sessions.rename": guard(sessionHandlers.rename),
 
     "sessions.pageProviderBindings": guard(sessionHandlers.pageProviderBindings),
+    "sessions.modelSessionBindings": guard(sessionHandlers.modelSessionBindings),
 
     "worktrees.list": guard(worktreeHandlers.list),
 
