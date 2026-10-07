@@ -454,6 +454,25 @@ export interface Api {
   };
   "memoryModel.probe": { params: { model: string }; result: TestResult };
 
+  "accounts.list": {
+    params: void;
+    result: {
+      accounts: {
+        id: string;
+        kind: "codex" | "anthropic-api";
+        name: string;
+        provider: string;
+        isDefault: boolean;
+        loggedIn: boolean;
+        authType: "oauth" | "api_key";
+      }[];
+    };
+  };
+  "accounts.add": { params: { kind: "codex" | "anthropic-api"; name: string }; result: { ok: true } };
+  "accounts.update": {
+    params: { id: string; action: "rename" | "default" | "remove"; name?: string };
+    result: { ok: true };
+  };
   "auth.providers": { params: void; result: { providers: ProviderStatus[] } };
   "auth.allProviders": { params: void; result: { providers: ApiKeyProviderStatus[] } };
   "auth.setApiKey": {

@@ -26,6 +26,7 @@ import { ProviderIcon } from "./models/ProviderIcon";
 import { OAuthDetail } from "./models/OAuthDetail";
 import { ApiKeyDetail } from "./models/ApiKeyDetail";
 import { AddProviderPicker } from "./models/AddProviderPicker";
+import { ProviderAccounts } from "./models/ProviderAccounts";
 
 type Selection = ModelsConfigSelection;
 
@@ -426,6 +427,13 @@ export function ModelsConfig({
             </div>
           )}
 
+          <ProviderAccounts
+            onRefresh={() => {
+              refreshOAuthProviders();
+              refreshApiKeyProviders();
+            }}
+            onSelect={(providerId, kind) => setSelection({ type: kind === "codex" ? "oauth" : "apikey", providerId })}
+          />
           {/* Body */}
           <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden" }}>
             {/* Left: tree */}

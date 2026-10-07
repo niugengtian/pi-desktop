@@ -5,6 +5,7 @@ import { RpcError, type ApiKeyProviderStatus } from "../../contract/types";
 import { getSharedModelRuntime } from "../model-runtime";
 import { credentialStateMatches, recoverCommittedCredential, type CredentialTarget } from "../credential-sync";
 import { resolveLoginCode, type createAuthLoginService } from "../auth-login";
+import { providerAccounts } from "../provider-accounts";
 
 export async function credentialMutationFailure(
   modelRuntime: ModelRuntime,
@@ -61,7 +62,21 @@ export function createAuthHandlers(authLogin: Pick<ReturnType<typeof createAuthL
           authenticated: storedProviders.has(p.id),
           loggedIn: storedProviders.has(p.id),
         }));
-      return { providers: result };
+      const accounts = await providerAccounts().status();
+      return {
+        providers: [
+          ...result.filter((row) => !providerAccounts().find(row.id)),
+          ...accounts
+            .filter((account) => account.kind === "codex")
+            .map((account) => ({
+              id: account.provider,
+              name: `Codex · ${account.name}`,
+              usesCallbackServer: false,
+              authenticated: account.loggedIn,
+              loggedIn: account.loggedIn,
+            })),
+        ],
+      };
     },
 
     allProviders: async () => {
@@ -73,7 +88,8 @@ export function createAuthHandlers(authLogin: Pick<ReturnType<typeof createAuthL
       for (const model of all) {
         if (seen.has(model.provider)) continue;
         seen.add(model.provider);
-        if (OAUTH_PROVIDER_IDS.has(model.provider)) continue;
+        const account = providerAccounts().find(model.provider);
+        if (OAUTH_PROVIDER_IDS.has(model.provider) || account?.kind === "codex" || account?.removed) continue;
         const provider = modelRuntime.getProvider(model.provider);
         if (!provider?.auth.apiKey) continue;
         const status = modelRuntime.getProviderAuthStatus(model.provider);
@@ -93,6 +109,23 @@ export function createAuthHandlers(authLogin: Pick<ReturnType<typeof createAuthL
       const { provider, key } = params as { provider: string; key: string };
       if (!provider || !key?.trim()) {
         throw new RpcError({ code: "BAD_REQUEST", message: "provider and key required" });
+      }
+      const account =
+        providerAccounts().find(provider) ??
+        (provider === "anthropic" ? providerAccounts().ensureLegacy(provider) : undefined);
+      if (account) {
+        try {
+          await providerAccounts().login(provider, "api_key", {
+            prompt: async (request) => {
+              if (request.type !== "secret") throw new Error("Unsupported login field");
+              return key.trim();
+            },
+            notify() {},
+          });
+        } catch {
+          throw new RpcError({ code: "BAD_REQUEST", message: "Account API key could not be saved" });
+        }
+        return { ok: true as const, synchronized: true };
       }
       const modelRuntime = await getSharedModelRuntime();
       let promptCount = 0;
@@ -122,6 +155,14 @@ export function createAuthHandlers(authLogin: Pick<ReturnType<typeof createAuthL
 
     deleteApiKey: async (params) => {
       const { provider } = params as { provider: string };
+      if (providerAccounts().find(provider)) {
+        try {
+          await providerAccounts().logout(provider);
+        } catch {
+          throw new RpcError({ code: "BAD_REQUEST", message: "Account logout failed" });
+        }
+        return { ok: true as const, synchronized: true };
+      }
       const modelRuntime = await getSharedModelRuntime();
       try {
         await modelRuntime.logout(provider);
@@ -136,6 +177,14 @@ export function createAuthHandlers(authLogin: Pick<ReturnType<typeof createAuthL
 
     logout: async (params) => {
       const { provider } = params as { provider: string };
+      if (providerAccounts().find(provider)) {
+        try {
+          await providerAccounts().logout(provider);
+        } catch {
+          throw new RpcError({ code: "BAD_REQUEST", message: "Account logout failed" });
+        }
+        return { ok: true as const, synchronized: true };
+      }
       const modelRuntime = await getSharedModelRuntime();
       try {
         await modelRuntime.logout(provider);

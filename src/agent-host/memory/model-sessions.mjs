@@ -9,6 +9,10 @@ export class ModelSessions {
   sendImages = [];
   records = new Map();
   archived = [];
+  busy = false;
+  constructor({ acquire = () => () => {} } = {}) {
+    this.acquire = acquire;
+  }
   restore(manager) {
     const source = manager
       .getEntries()
@@ -57,84 +61,98 @@ export class ModelSessions {
       if (key) this.records.set(key, { key, id: session.sessionId, delivered: [] });
     }
     if (session.model && (!this.hasSaved || this.active)) this.select(session.model);
+    const setModel = session.setModel.bind(session);
+    session.setModel = async (model) => {
+      if (this.busy || session.isStreaming || session.isCompacting || session.isRetrying)
+        throw new Error("Wait for the current request before switching provider, account or model");
+      return setModel(model);
+    };
     const prompt = session.prompt.bind(session);
     session.prompt = async (text, options) => {
       if (text.startsWith("/") || !session.model || options?.streamingBehavior) return prompt(text, options);
-      const record = this.select(session.model);
-      const images = new Map();
-      let hasOriginalLedger = false;
-      for (const entry of session.sessionManager.getBranch()) {
-        if (entry.type === "custom" && entry.customType === "desktop-original-images") {
-          hasOriginalLedger = true;
-          for (const image of entry.data.images) images.set(imageId(image), image);
-        }
-        const content =
-          entry.type === "message" && (!hasOriginalLedger || entry.message.role === "toolResult")
-            ? entry.message.content
-            : undefined;
-        if (Array.isArray(content))
-          for (const image of content) if (image.type === "image") images.set(imageId(image), image);
-      }
-      const originals = (options?.images ?? []).filter((image) => !images.has(imageId(image)));
-      if (originals.length)
-        session.sessionManager.appendCustomEntry("desktop-original-images", {
-          text,
-          images: structuredClone(originals),
-        });
-      for (const image of options?.images ?? []) images.set(imageId(image), image);
-      const pending = [...images].filter(([id]) => !record.delivered.includes(id)).map(([, image]) => image);
-      const batches = imageBatches(pending);
-      const success = () => {
-        const last = [...session.sessionManager.buildSessionProjection().messages]
-          .reverse()
-          .find((message) => message.role === "assistant");
-        if (!last || ["error", "aborted"].includes(last.stopReason))
-          throw new Error(last?.errorMessage ?? "Image transmission interrupted");
-        if (session.model.provider === "opencli-page") {
-          const replyText =
-            last.content
-              ?.filter((block) => block.type === "text")
-              .map((block) => block.text)
-              .join("\n") ?? "";
-          if (replyText.includes("<!-- PAGE_PROVIDER_TURN_UNCONFIRMED -->"))
-            throw new Error("Web image delivery is unconfirmed; image cursor was not advanced");
-          const binding = session.sessionManager
-            .getBranch()
-            .filter(
-              (e) =>
-                e.type === "custom" &&
-                ["page-provider-binding", "page-provider-binding-provisional"].includes(e.customType) &&
-                e.data?.modelId === session.model.id,
-            )
-            .at(-1)?.data;
-          if (binding) record.remote = structuredClone(binding.remote);
-        }
-        record.delivered = [...new Set([...record.delivered, ...this.sendImages.map(imageId)])];
-        this.save();
-      };
-      const tools = session.getActiveToolNames();
+      if (this.busy) throw new Error("A request already owns this model session");
+      const release = this.acquire(session.model.provider);
+      this.busy = true;
       try {
-        if (batches.length > 1) {
-          session.setActiveToolsByName([]);
-          for (let index = 0; index < batches.length; index++) {
-            this.sendImages = batches[index];
-            await prompt(
-              `Image transfer ${index + 1}/${batches.length}. Record the visual content of each image, including readable text and details needed for later reasoning. Keep the image order. Do not perform the final task yet; wait for the user's final request.`,
-              { ...options, images: batches[index] },
-            );
+        const record = this.select(session.model);
+        const images = new Map();
+        let hasOriginalLedger = false;
+        for (const entry of session.sessionManager.getBranch()) {
+          if (entry.type === "custom" && entry.customType === "desktop-original-images") {
+            hasOriginalLedger = true;
+            for (const image of entry.data.images) images.set(imageId(image), image);
+          }
+          const content =
+            entry.type === "message" && (!hasOriginalLedger || entry.message.role === "toolResult")
+              ? entry.message.content
+              : undefined;
+          if (Array.isArray(content))
+            for (const image of content) if (image.type === "image") images.set(imageId(image), image);
+        }
+        const originals = (options?.images ?? []).filter((image) => !images.has(imageId(image)));
+        if (originals.length)
+          session.sessionManager.appendCustomEntry("desktop-original-images", {
+            text,
+            images: structuredClone(originals),
+          });
+        for (const image of options?.images ?? []) images.set(imageId(image), image);
+        const pending = [...images].filter(([id]) => !record.delivered.includes(id)).map(([, image]) => image);
+        const batches = imageBatches(pending);
+        const success = () => {
+          const last = [...session.sessionManager.buildSessionProjection().messages]
+            .reverse()
+            .find((message) => message.role === "assistant");
+          if (!last || ["error", "aborted"].includes(last.stopReason))
+            throw new Error(last?.errorMessage ?? "Image transmission interrupted");
+          if (session.model.provider === "opencli-page") {
+            const replyText =
+              last.content
+                ?.filter((block) => block.type === "text")
+                .map((block) => block.text)
+                .join("\n") ?? "";
+            if (replyText.includes("<!-- PAGE_PROVIDER_TURN_UNCONFIRMED -->"))
+              throw new Error("Web image delivery is unconfirmed; image cursor was not advanced");
+            const binding = session.sessionManager
+              .getBranch()
+              .filter(
+                (e) =>
+                  e.type === "custom" &&
+                  ["page-provider-binding", "page-provider-binding-provisional"].includes(e.customType) &&
+                  e.data?.modelId === session.model.id,
+              )
+              .at(-1)?.data;
+            if (binding) record.remote = structuredClone(binding.remote);
+          }
+          record.delivered = [...new Set([...record.delivered, ...this.sendImages.map(imageId)])];
+          this.save();
+        };
+        const tools = session.getActiveToolNames();
+        try {
+          if (batches.length > 1) {
+            session.setActiveToolsByName([]);
+            for (let index = 0; index < batches.length; index++) {
+              this.sendImages = batches[index];
+              await prompt(
+                `Image transfer ${index + 1}/${batches.length}. Record the visual content of each image, including readable text and details needed for later reasoning. Keep the image order. Do not perform the final task yet; wait for the user's final request.`,
+                { ...options, images: batches[index] },
+              );
+              success();
+            }
+            session.setActiveToolsByName(tools);
+            this.sendImages = [];
+            await prompt(text, { ...options, images: options?.images });
+          } else {
+            this.sendImages = batches[0] ?? [];
+            await prompt(text, options);
             success();
           }
-          session.setActiveToolsByName(tools);
+        } finally {
           this.sendImages = [];
-          await prompt(text, { ...options, images: options?.images });
-        } else {
-          this.sendImages = batches[0] ?? [];
-          await prompt(text, options);
-          success();
+          session.setActiveToolsByName(tools);
         }
       } finally {
-        this.sendImages = [];
-        session.setActiveToolsByName(tools);
+        this.busy = false;
+        release();
       }
     };
     const stream = session.agent.streamFunction;
@@ -200,7 +218,8 @@ export class ModelSessions {
           description: "List, detach or rebind the current model session: list | unbind | bind <id>",
           handler: async (args, ctx) => {
             const [action = "list", id] = args.trim().split(/\s+/);
-            if (!ctx.isIdle()) throw new Error("Wait for the current turn before changing session bindings");
+            if (this.busy || !ctx.isIdle())
+              throw new Error("Wait for the current turn before changing session bindings");
             if (action === "unbind") {
               if (this.session.model.provider === "opencli-page")
                 this.session.sessionManager.appendCustomEntry("page-provider-binding-reset", {

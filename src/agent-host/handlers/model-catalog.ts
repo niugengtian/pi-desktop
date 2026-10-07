@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { providerAccounts } from "../provider-accounts";
 import { getAgentDir, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ApiHandler } from "../../contract/rpc";
@@ -158,7 +159,8 @@ export async function projectModelsList(
   }
 
   let defaultModel: { provider: string; modelId: string } | null = null;
-  const provider = settings.getDefaultProvider();
+  const configuredProvider = settings.getDefaultProvider();
+  const provider = configuredProvider ? providerAccounts().defaultProvider(configuredProvider) : undefined;
   const modelId = settings.getDefaultModel();
   if (provider && modelId && visible.some((model) => model.provider === provider && model.id === modelId)) {
     defaultModel = { provider, modelId };

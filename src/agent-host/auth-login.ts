@@ -7,6 +7,7 @@ import type { RpcServer } from "../contract/rpc";
 import { RpcError } from "../contract/types";
 import { getSharedModelRuntime } from "./model-runtime";
 import { recoverCommittedCredential } from "./credential-sync";
+import { providerAccounts } from "./provider-accounts";
 
 type Pending = {
   provider: string;
@@ -46,11 +47,30 @@ type OAuthRuntime = {
   refresh: import("@earendil-works/pi-coding-agent").ModelRuntime["refresh"];
 };
 
-type ModelRuntimeFactory = () => OAuthRuntime | Promise<OAuthRuntime>;
+type ModelRuntimeFactory = (provider?: string) => OAuthRuntime | Promise<OAuthRuntime>;
+
+async function accountLoginRuntime(provider?: string): Promise<OAuthRuntime> {
+  const accounts = providerAccounts();
+  const account = provider
+    ? (accounts.find(provider) ?? (provider === "openai-codex" ? accounts.ensureLegacy(provider) : undefined))
+    : undefined;
+  if (!account) return getSharedModelRuntime();
+  const scoped = await accounts.runtime(account);
+  const base = account.kind === "codex" ? "openai-codex" : "anthropic";
+  return {
+    getProvider: () => scoped.getProvider(base),
+    login: (_provider, type, interaction) => accounts.login(account.provider, type, interaction),
+    listCredentials: async () =>
+      (await scoped.listCredentials())
+        .filter((entry) => entry.providerId === base)
+        .map((entry) => ({ ...entry, providerId: account.provider })),
+    refresh: (options) => scoped.refresh(options),
+  };
+}
 
 export function createAuthLoginService(
   server: RpcServer,
-  createModelRuntime: ModelRuntimeFactory = getSharedModelRuntime,
+  createModelRuntime: ModelRuntimeFactory = accountLoginRuntime,
 ) {
   let closed = false;
   const ownedLogins = new Map<string, AbortController>();
@@ -86,7 +106,7 @@ export function createAuthLoginService(
       };
       let modelRuntime: OAuthRuntime;
       try {
-        modelRuntime = await createModelRuntime();
+        modelRuntime = await createModelRuntime(provider);
         if (closed || abort.signal.aborted) {
           releaseSlot();
           return { started: false };
@@ -239,7 +259,12 @@ export function createAuthLoginService(
           if (msg === "Login cancelled" || abort.signal.aborted) {
             emitTerminal({ type: "cancelled" });
           } else {
-            emitTerminal({ type: "error", message: msg });
+            emitTerminal({
+              type: "error",
+              message: providerAccounts().find(provider)
+                ? "Account login failed. Retry this account's official login flow."
+                : msg,
+            });
           }
         } finally {
           cleanup();

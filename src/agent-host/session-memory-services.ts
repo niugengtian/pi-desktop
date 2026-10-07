@@ -1,4 +1,5 @@
 import { ModelSessions } from "./memory/model-sessions.mjs";
+import { providerAccounts } from "./provider-accounts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createDesktopAgentServices } from "./builtin-web-provider";
 import { appendFileSync } from "node:fs";
@@ -53,7 +54,7 @@ export async function createDesktopSessionServices(
         model.api === "openai-codex-responses" &&
         /^http:\/\/127\.0\.0\.1:\d+(?:\/|$)/.test(model.baseUrl ?? "")),
   });
-  const modelSessions = new ModelSessions();
+  const modelSessions = new ModelSessions({ acquire: (provider) => providerAccounts().acquire(provider) });
   const extensionFactories = [
     modelSessions.extension(),
     createLegacyChannelContextExtension(),

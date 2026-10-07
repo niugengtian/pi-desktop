@@ -1,4 +1,5 @@
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { providerAccounts } from "./provider-accounts";
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { ModelCatalogStatus, ModelCatalogWarning } from "../contract/types";
 
@@ -180,10 +181,15 @@ let sharedRuntimePromise: Promise<ModelRuntime> | undefined;
  */
 export function getSharedModelRuntime(): Promise<ModelRuntime> {
   if (!sharedRuntimePromise) {
-    sharedRuntimePromise = ModelRuntime.create().catch((error) => {
-      sharedRuntimePromise = undefined;
-      throw error;
-    });
+    sharedRuntimePromise = ModelRuntime.create()
+      .then(async (runtime) => {
+        await providerAccounts().install(runtime);
+        return runtime;
+      })
+      .catch((error) => {
+        sharedRuntimePromise = undefined;
+        throw error;
+      });
   }
   return sharedRuntimePromise;
 }

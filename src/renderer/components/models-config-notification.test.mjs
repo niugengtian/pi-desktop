@@ -54,6 +54,8 @@ const { ModelsConfig, useSessionModels, testApi } = await importTestBundle("mode
           return () => entry.closed++;
         }
         export async function call(method,params) {
+          // Account enumeration is a read-only sibling of the credential editor.
+          if(method === 'accounts.list') return {accounts:[]};
           state.calls.push({method,params});
           if(method === 'auth.loginCancel') return await take(state.cancelQueue,{ok:true});
           if(method === 'auth.loginStart') return await take(state.startQueue,{ok:true,started:true});

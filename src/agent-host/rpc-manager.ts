@@ -3,6 +3,7 @@ import {
   createBashToolDefinition,
   getAgentDir,
   SessionManager,
+  ModelRuntime,
   type CreateAgentSessionFromServicesOptions,
   type AgentSessionRuntimeDiagnostic,
 } from "@earendil-works/pi-coding-agent";
@@ -10,6 +11,7 @@ import { randomUUID } from "crypto";
 import { EXCLUDED_PI_TOOLS, filterDesktopToolNames, validateDesktopToolNames } from "../shared/pi-tool-policy.ts";
 import { assertSessionWritable } from "./session-readonly.ts";
 import { resolveSessionModel } from "./session-model.ts";
+import { providerAccounts } from "./provider-accounts";
 import { cacheSessionPath } from "./session-reader";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "../shared/pi-types";
@@ -579,6 +581,15 @@ export class AgentSessionWrapper {
 
       case "set_model": {
         const { provider, modelId } = command as { provider: string; modelId: string };
+        if (
+          this.promptRunning ||
+          this.queuedTurnCount ||
+          this.inner.isStreaming ||
+          this.inner.isCompacting ||
+          this.inner.pendingMessageCount
+        )
+          throw new Error("Wait for the current request to settle before switching provider, account or model");
+        if (this.inner.modelRuntime instanceof ModelRuntime) await providerAccounts().install(this.inner.modelRuntime);
         const model = await resolveSessionModel(this.inner.modelRuntime, provider, modelId);
         await this.inner.setModel(model);
         return { id: model.id, provider: model.provider };
@@ -1466,9 +1477,24 @@ export async function startRpcSession(
           )
         : []),
     ] as unknown as NonNullable<CreateAgentSessionFromServicesOptions["customTools"]>;
+    const configuredProvider = services.settingsManager.getDefaultProvider();
+    const defaultModelId = services.settingsManager.getDefaultModel();
+    const savedModel = sessionManager.buildSessionProjection().model;
+    const savedAccount =
+      savedModel &&
+      (providerAccounts().find(savedModel.provider) || savedModel.provider.startsWith("desktop-account-"));
+    const initialModel =
+      savedAccount && savedModel
+        ? services.modelRuntime.getModel(savedModel.provider, savedModel.modelId)
+        : !savedModel && configuredProvider && defaultModelId
+          ? services.modelRuntime.getModel(providerAccounts().defaultProvider(configuredProvider), defaultModelId)
+          : undefined;
+    if (savedAccount && !initialModel)
+      throw new Error("The conversation's saved account model is unavailable; no account fallback was used");
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
+      ...(initialModel ? { model: initialModel } : {}),
       customTools,
       excludeTools: [...EXCLUDED_PI_TOOLS],
     });

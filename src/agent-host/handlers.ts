@@ -3,6 +3,7 @@
  * Implements the desktop RPC contract in the Agent Host process.
  */
 import { modelCatalogHandlers } from "./handlers/model-catalog";
+import { providerAccounts } from "./provider-accounts";
 import { modelConfigHandlers } from "./handlers/models-config";
 import { memoryModelHandlers } from "./handlers/memory-model";
 import { createAuthHandlers } from "./handlers/auth";
@@ -309,6 +310,27 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "memoryModel.set": guard(memoryModelHandlers.set),
     "memoryModel.probe": guard(memoryModelHandlers.probe),
 
+    "accounts.list": guard(async () => ({ accounts: await providerAccounts().status() })),
+    "accounts.add": guard(async ({ kind, name }) => {
+      try {
+        providerAccounts().add(kind, name);
+      } catch {
+        throw new RpcError({ code: "BAD_REQUEST", message: "Unable to add account: check account type and name" });
+      }
+      return { ok: true as const };
+    }),
+    "accounts.update": guard(async ({ id, action, name }) => {
+      try {
+        if (action === "remove") await providerAccounts().remove(id);
+        else providerAccounts().update(id, action, name);
+      } catch {
+        throw new RpcError({
+          code: "BAD_REQUEST",
+          message: "Account change refused: check account details and wait for active requests to finish",
+        });
+      }
+      return { ok: true as const };
+    }),
     "auth.providers": guard(authHandlers.providers),
 
     "auth.allProviders": guard(authHandlers.allProviders),

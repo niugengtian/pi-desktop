@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { providerAccounts } from "./provider-accounts.ts";
 import { fileURLToPath } from "node:url";
 import { createAgentSessionServices, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
@@ -41,9 +42,11 @@ export function desktopResourceLoaderOptions(
   };
 }
 
-export function createDesktopAgentServices(options: Parameters<typeof createAgentSessionServices>[0]) {
-  return createAgentSessionServices({
+export async function createDesktopAgentServices(options: Parameters<typeof createAgentSessionServices>[0]) {
+  const services = await createAgentSessionServices({
     ...options,
     resourceLoaderOptions: desktopResourceLoaderOptions(options.resourceLoaderOptions),
   });
+  await providerAccounts().install(services.modelRuntime);
+  return services;
 }
