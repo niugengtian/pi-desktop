@@ -165,9 +165,12 @@ test("Codex account warm candidates require official route, explicit off support
   const registered = { getRegisteredNativeProvider: (id) => ({ name: `Codex · ${id}` }) };
   assert.equal(supportsWarmModel(first, registered), true);
   assert.equal(supportsWarmModel(second, registered), true);
+  assert.equal(
+    supportsWarmModel({ ...first, id: "gpt-5.6-sol", thinkingLevelMap: { minimal: "low" } }, registered),
+    true,
+  );
   for (const invalid of [
     { ...first, baseUrl: "https://example.test/backend-api" },
-    { ...first, thinkingLevelMap: { off: null } },
     { ...first, provider: "custom" },
   ])
     assert.equal(supportsWarmModel(invalid, registered), false);

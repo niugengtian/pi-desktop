@@ -5,7 +5,20 @@ import { inputStyle } from "./form-controls";
 export function WarmModelConfig() {
   const [model, setModel] = useState("");
   const [version, setVersion] = useState("");
-  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [models, setModels] = useState<Array<{ id: string; name: string; warning?: string }>>([]);
+  const [savedModel, setSavedModel] = useState("");
+  const selected = models.find((item) => item.id === model);
+  const buttonStyle = {
+    minHeight: 34,
+    padding: "6px 12px",
+    borderRadius: 5,
+    border: "1px solid var(--border)",
+    background: "var(--bg-panel)",
+    color: "var(--text-muted)",
+    fontSize: 12,
+    fontFamily: "inherit",
+    cursor: "pointer",
+  };
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
   async function load() {
@@ -13,6 +26,7 @@ export function WarmModelConfig() {
     try {
       const result = await call("warmModel.get");
       setModel(result.model);
+      setSavedModel(result.model);
       setVersion(result.version);
       setModels(result.models);
       setMessage("");
@@ -30,6 +44,7 @@ export function WarmModelConfig() {
     try {
       const result = await call("warmModel.set", { model, expectedVersion: version });
       setVersion(result.version);
+      setSavedModel(result.model);
       setMessage("默认 Warm 模型已保存。重新加载或新建会话后生效；不会立即发送历史。");
     } catch (error) {
       setMessage(String(error));
@@ -47,10 +62,13 @@ export function WarmModelConfig() {
       <label htmlFor="warm-model">摘要作业者</label>
       <select
         id="warm-model"
-        style={{ ...inputStyle, margin: "8px 0", width: "100%" }}
+        style={{ ...inputStyle, margin: "8px 0", width: "100%", fontFamily: "inherit" }}
         value={model}
         disabled={busy}
-        onChange={(event) => setModel(event.target.value)}
+        onChange={(event) => {
+          setModel(event.target.value);
+          setMessage("");
+        }}
       >
         {!models.some((item) => item.id === model) && <option value={model}>{model || "加载中…"}（当前不可用）</option>}
         {models.map((item) => (
@@ -59,24 +77,35 @@ export function WarmModelConfig() {
           </option>
         ))}
       </select>
-      <button
-        type="button"
-        disabled={busy || !models.some((item) => item.id === model)}
-        onClick={() => void save()}
-        style={{
-          background: "var(--accent)",
-          color: "white",
-          border: 0,
-          borderRadius: 5,
-          padding: "8px 12px",
-          cursor: "pointer",
-        }}
-      >
-        保存为默认 Warm 模型
-      </button>{" "}
-      <button type="button" disabled={busy} onClick={() => void load()}>
-        刷新可用模型
-      </button>
+      {selected?.warning && (
+        <p role="alert" style={{ margin: "4px 0 12px", color: "var(--text-muted)", fontSize: 12 }}>
+          {selected.warning}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          disabled={busy || !selected || model === savedModel}
+          onClick={() => void save()}
+          style={{
+            ...buttonStyle,
+            background: "var(--accent)",
+            borderColor: "var(--accent)",
+            color: "white",
+            opacity: busy || !selected || model === savedModel ? 0.5 : 1,
+          }}
+        >
+          保存默认
+        </button>
+        <button
+          type="button"
+          style={{ ...buttonStyle, opacity: busy ? 0.5 : 1 }}
+          disabled={busy}
+          onClick={() => void load()}
+        >
+          刷新模型
+        </button>
+      </div>
       {message && <p role="status">{message}</p>}
     </section>
   );

@@ -16,10 +16,7 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const CODEX_PROVIDERS = (provider) => provider === "openai-codex" || provider?.startsWith("desktop-account-");
 const isCodexModel = (model) =>
-  model?.api === "openai-codex-responses" &&
-  CODEX_PROVIDERS(model.provider) &&
-  model.baseUrl === CODEX_BASE_URL &&
-  model.thinkingLevelMap?.off === "none";
+  model?.api === "openai-codex-responses" && CODEX_PROVIDERS(model.provider) && model.baseUrl === CODEX_BASE_URL;
 
 function endpoint(model) {
   try {
@@ -106,6 +103,7 @@ export function createFlashWarmRunner({
         ? LONG_WARM_INSTRUCTIONS
         : WARM_INSTRUCTIONS;
     const outputCap = large ? 4096 : 2048;
+    let codexReasoning = false;
     let stage = "preflight";
     let status;
     let stopReason;
@@ -140,7 +138,9 @@ export function createFlashWarmRunner({
         body.parallel_tool_calls !== true ||
         body.previous_response_id !== undefined ||
         body.prompt_cache_key !== undefined ||
-        (body.reasoning && (body.reasoning.effort !== "none" || body.reasoning.summary !== undefined)) ||
+        (codexReasoning
+          ? body.reasoning?.effort !== (model.thinkingLevelMap?.low ?? "low") || body.reasoning?.summary !== "auto"
+          : body.reasoning && (body.reasoning.effort !== "none" || body.reasoning.summary !== undefined)) ||
         body.max_output_tokens !== undefined ||
         body.samplingParams !== undefined ||
         body.service_tier !== undefined ||
@@ -149,7 +149,7 @@ export function createFlashWarmRunner({
         body.include?.length !== 1 ||
         body.include[0] !== "reasoning.encrypted_content" ||
         (body.text?.verbosity !== undefined && body.text.verbosity !== "low") ||
-        estimateEnvelope(body, 1).estimatedTokens + outputCap + 1024 > actual.contextWindow
+        estimateEnvelope(body, 1).estimatedTokens + actual.maxTokens + 1024 > actual.contextWindow
       )
         throw new Error("Codex warm payload refused");
     };
@@ -201,6 +201,7 @@ export function createFlashWarmRunner({
       if (divider <= 0 || divider === target.length - 1) throw new Error("Warm target refused");
       model = runtime.getModel(target.slice(0, divider), target.slice(divider + 1));
       const codex = isCodexModel(model);
+      codexReasoning = codex && model.thinkingLevelMap?.off !== "none";
       const destination = codex
         ? { origin: "https://chatgpt.com", pathname: "/backend-api/codex/responses" }
         : model && endpoint(model);
@@ -233,7 +234,7 @@ export function createFlashWarmRunner({
           timeoutMs: large ? 120000 : 60000,
           maxRetries: 0,
           maxTokens: Math.min(outputCap, model.maxTokens),
-          reasoning: "off",
+          reasoning: codexReasoning ? "low" : "off",
           toolChoice: "none",
           cacheRetention: "none",
           ...(codex ? { transport: "sse" } : {}),
@@ -286,7 +287,7 @@ export function createFlashWarmRunner({
               wireHash: createHash("sha256").update(options.body).digest("hex"),
               model: target,
               origin: actual.origin,
-              thinking: "disabled",
+              thinking: codexReasoning ? "low" : "disabled",
             });
             const response = await transport(url, { ...options, redirect: "error" });
             status = response.status;
@@ -302,8 +303,8 @@ export function createFlashWarmRunner({
         !allowed() ||
         !dispatched ||
         result.stopReason !== "stop" ||
-        result.content.some((part) => part.type !== "text") ||
-        (result.usage?.reasoning ?? 0) > 0
+        result.content.some((part) => part.type !== "text" && !(codexReasoning && part.type === "thinking")) ||
+        (!codexReasoning && (result.usage?.reasoning ?? 0) > 0)
       )
         throw new Error("Warm result refused");
       onEvent({
@@ -314,7 +315,13 @@ export function createFlashWarmRunner({
         reasoning: result.usage?.reasoning,
         totalTokens: result.usage?.totalTokens,
       });
-      return { answer: result.content.map((part) => part.text).join(""), usage: result.usage };
+      return {
+        answer: result.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join(""),
+        usage: result.usage,
+      };
     } catch {
       onEvent({
         phase: signal?.aborted ? "cancelled" : "failed",

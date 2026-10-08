@@ -19,7 +19,16 @@ export const warmModelHandlers = {
       models: ids.map((id) => {
         const split = id.indexOf("/");
         const model = runtime.getModel(id.slice(0, split), id.slice(split + 1));
-        return { id, name: model?.name ?? id };
+        return {
+          id,
+          name: model?.name ?? id,
+          ...(model?.api === "openai-codex-responses" && model.thinkingLevelMap?.off !== "none"
+            ? {
+                warning:
+                  "此 Codex 模型将使用低档思考，可能消耗额外订阅额度。Codex 不提供这里可验证的输出硬上限；思考内容不会写入 Warm 摘要。",
+              }
+            : {}),
+        };
       }),
     };
   },
