@@ -9,11 +9,15 @@ export interface WarmReply {
 export type WarmRunnerFactory = (options: {
   signal: AbortSignal;
   authorized: () => boolean;
+  target?: string;
 }) => (plan: WarmPlan) => Promise<WarmReply>;
+export function supportsWarmModel(model: unknown, runtime?: ModelRuntime): boolean;
+export function listWarmModels(runtime: ModelRuntime): Promise<string[]>;
 export function createFlashWarmRunner(options: {
   runtime: ModelRuntime;
   signal?: AbortSignal;
   authorized: () => boolean;
+  target?: string;
   transport?: typeof fetch;
   onEvent?: (event: Record<string, string | number | undefined>) => void;
 }): (plan: WarmPlan) => Promise<WarmReply>;

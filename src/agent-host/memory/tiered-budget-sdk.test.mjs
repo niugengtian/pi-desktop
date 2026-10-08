@@ -428,6 +428,39 @@ function simulatedFlash(captures, { invalid = false, oversized = false, wait = a
     });
   };
 }
+test("warm model command lists available targets, selects one per session and resets to Flash", async (t) => {
+  const f = await fixture(t, { warmRunner: () => async () => ({ answer: "{}" }) });
+  await f.enable();
+  f.runtime.registerProvider("my-api", {
+    api: "openai-completions",
+    apiKey: "fictional",
+    baseUrl: "https://example.test/v1",
+    models: [
+      {
+        id: "summary",
+        name: "Summary",
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 32768,
+        maxTokens: 2048,
+        cost: usage.cost,
+      },
+    ],
+  });
+  await f.session.prompt("/tiered-warm-model list");
+  const listed = JSON.parse(f.notices.at(-1));
+  assert.ok(listed.candidates.includes("my-api/summary"));
+  await f.session.prompt("/tiered-warm-model my-api/summary");
+  await f.session.prompt("/tiered-budget-status");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmTarget, "my-api/summary");
+  await f.session.prompt("/tiered-warm-model missing/model");
+  await f.session.prompt("/tiered-budget-status");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmTarget, "my-api/summary");
+  await f.session.prompt("/tiered-warm-flash");
+  await f.session.prompt("/tiered-budget-status");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmTarget, "deepseek/deepseek-flash");
+});
+
 test("adaptive small and medium histories send only the ordinary SDK request, without Flash compaction", async (t) => {
   for (const oldText of ["Fictional small history", "Fictional medium text. ".repeat(850)]) {
     const flash = [];
@@ -461,7 +494,7 @@ test("incremental Flash SDK transport mock: one reviewed native warm, no selecte
   const f = await fixture(t, { oldText: "Fictional older fact 17. ".repeat(400), warmRunner: simulatedFlash(flash) });
   await f.enable();
   await f.session.prompt("/tiered-budget-status");
-  assert.equal(JSON.parse(f.notices.at(-1)).warmProcessor, "flash-per-attempt-review");
+  assert.equal(JSON.parse(f.notices.at(-1)).warmProcessor, "model-per-attempt-review");
   assert.equal(flash.length, 0, "Default selection is not source permission");
   await f.session.prompt("Fictional next ordinary request after reviewed warm");
   assert.equal(flash.length, 1);
@@ -517,7 +550,7 @@ test("Flash default source refusal never falls back, explicit native selection r
   await f.session.prompt("/tiered-budget-status");
   const state = JSON.parse(f.notices.at(-1));
   assert.equal(state.enabled, false);
-  assert.equal(state.warmProcessor, "flash-per-attempt-review");
+  assert.equal(state.warmProcessor, "model-per-attempt-review");
   assert.equal(flash.length, 0);
 });
 
@@ -1038,14 +1071,16 @@ test("automatic policy sends image batches before final request and restores ori
   for (const image of images) assert.ok(all.includes(image.data), "raw images retained in cool");
 });
 
-test("automatic large-context warm summarizes text incrementally without per-segment dialogs", async (t) => {
+test("automatic budget still requires per-attempt source and summary reviews for warm", async (t) => {
   const plans = [];
+  let reviews = 0;
   const f = await fixture(t, {
     adaptive: true,
     automatic: true,
     oldText: "Earlier useful task evidence. ".repeat(4000),
-    confirm: () => {
-      throw new Error("Automatic policy must not require a manual dialog");
+    confirm: async () => {
+      reviews++;
+      return true;
     },
     warmRunner:
       (_runtime, { authorized }) =>
@@ -1062,12 +1097,13 @@ test("automatic large-context warm summarizes text incrementally without per-seg
   });
   await f.session.prompt("Continue the current work.");
   assert.ok(plans.length > 1);
+  assert.equal(reviews, plans.length + 1, "Every source segment and final summary require independent review");
   assert.ok(plans.every((plan) => Buffer.byteLength(plan.payload) <= 64 * 1024));
   assert.equal(f.captures.length, 1);
   assert.match(JSON.stringify(f.captures[0].body), /Earlier useful decisions/);
   assert.doesNotMatch(JSON.stringify(f.captures[0].body), /Earlier useful task evidence/);
   const entry = f.manager.getEntries().findLast((e) => e.type === "compaction");
-  assert.equal(entry.details.tieredWarm.review, "automatic-summary-not-proven");
+  assert.equal(entry.details.tieredWarm.review, "human-approved-not-proven");
   assert.ok(
     f.manager
       .getEntries()
