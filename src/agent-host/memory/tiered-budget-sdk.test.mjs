@@ -528,7 +528,7 @@ test("Missing default Flash processor refuses promotion without selected-model s
   await f.session.prompt("Fictional main input with missing Flash processor");
   assert.equal(f.captures.length, 1, "Only normal main input with original hot");
   assert.equal(f.manager.getBranch().filter((e) => e.type === "compaction").length, 0);
-  assert.ok(f.notices.some((text) => text.includes("no native fallback")));
+  assert.ok(f.notices.some((text) => text.includes("不自动回退")));
 });
 
 test("Flash default source refusal never falls back, explicit native selection resets on disable", async (t) => {

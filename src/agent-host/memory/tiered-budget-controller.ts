@@ -34,6 +34,7 @@ import {
   validateWarmAnswer,
   type WarmRecord,
 } from "./tiered-warm.mjs";
+import { alignWarmToolBoundary } from "./warm-tool-boundary.mjs";
 import { listWarmModels, supportsWarmModel, type WarmRunnerFactory } from "./tiered-warm-remote.mjs";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
@@ -703,7 +704,16 @@ export class TieredBudgetController {
             .reverse()
             .find(({ messages }) => messages.some((message) => message.role === "user"));
           const protectedIndex = latestUser ? branch.findIndex((entry) => entry.id === latestUser.sourceEntry.id) : 0;
-          const keptIndex = branch.findIndex((entry) => entry.id === event.preparation.firstKeptEntryId);
+          let preparation;
+          try {
+            preparation = this.warmMode
+              ? alignWarmToolBoundary(ctx.sessionManager, event.preparation)
+              : event.preparation;
+          } catch {
+            notify(ctx, "Warm 无完整可压缩区间：工具调用尚未闭合，原始 hot 保留。", "warning");
+            return { cancel: true };
+          }
+          const keptIndex = branch.findIndex((entry) => entry.id === preparation.firstKeptEntryId);
           if (keptIndex < 0 || keptIndex > protectedIndex) {
             notify(
               ctx,
@@ -712,13 +722,14 @@ export class TieredBudgetController {
             );
             return { cancel: true };
           }
+          let warmStage = "source-consistency";
           try {
             this.compactSource = {
               grant: this.grant!,
               generation: this.generation,
               branchHash: tieredHash(JSON.stringify(branch)),
               fileHash: this.sourceFingerprint(),
-              firstKeptEntryId: event.preparation.firstKeptEntryId,
+              firstKeptEntryId: preparation.firstKeptEntryId,
             };
             this.compacting = true;
             this.warmCandidate = undefined;
@@ -742,14 +753,17 @@ export class TieredBudgetController {
                   return false;
                 }
               };
-              const plan = buildWarmPlan(ctx.sessionManager, event.preparation);
+              warmStage = "prepare-history";
+              const plan = buildWarmPlan(ctx.sessionManager, preparation);
               const warmTarget = this.warmTarget;
               const warmModel = this.session!.modelRuntime.getModel(
                 warmTarget.slice(0, warmTarget.indexOf("/")),
                 warmTarget.slice(warmTarget.indexOf("/") + 1),
               );
+              warmStage = "model-availability";
               if (!supportsWarmModel(warmModel, this.session!.modelRuntime)) throw new Error("Warm target unavailable");
               const warmDestination = warmModel!.baseUrl;
+              warmStage = "split-source";
               const segments = splitWarmPlan(plan);
               const answers: string[] = [];
               let warmUsage;
@@ -759,8 +773,10 @@ export class TieredBudgetController {
                   `Segment ${segment.segment?.index ?? 1}/${segments.length}; at most 64 KiB per request. Only this incremental source is sent. Native context advances only after all segments pass final review.\nTarget: ${warmTarget} @ ${warmDestination} (endpoint and serialized request verified before dispatch)\nMode: ${plan.schema}. The processor paraphrases useful decisions, results and pending work, and drops chatter/repetition. No exhaustive record or number coverage is required. All source stays in native cold history.\nCompletions output cap ≤4096 for long source, ≤2048 otherwise; Codex reserves the catalog output maximum without claiming a wire cap. Codex models without explicit off support use low thinking and may consume extra subscription quota; thinking is not retained in the warm summary. Other models use thinking off. No tools/retries/redirects/cache writes. Network/proxy routing is controlled by Desktop/OS; an Ollama endpoint must be on this Mac's loopback, not another LAN host.\nNo automatic redaction. Includes quoted user/assistant and completed tool data; excludes system/protocol, cold and previous warm. Reasoning/signatures are NOT sent: only visible task text/tool evidence is organized; reasoning stays in native cold history and leaves active replay after approved compaction. No tools executed by the processor. Source permission expires with this attempt.\nSYSTEM:\n${segment.instructions}\nUSER:\n${segment.payload}`,
                 );
                 if (!approved || !authorized()) return { cancel: true };
+                warmStage = "model-request";
                 const reply = await this.warmRunner({ signal: event.signal, authorized, target: warmTarget })(segment);
                 if (!authorized()) return { cancel: true };
+                warmStage = "validate-summary";
                 validateWarmAnswer(segment, reply.answer);
                 answers.push(reply.answer);
                 if (reply.usage) {
@@ -773,6 +789,7 @@ export class TieredBudgetController {
                   }
                 }
               }
+              warmStage = "merge-summary";
               let candidate = mergeWarmAnswers(plan, segments, answers);
               const candidateSize = () => {
                 const messages = convertToLlm([
@@ -830,9 +847,10 @@ export class TieredBudgetController {
               return { compaction: { ...candidate, usage: warmUsage } };
             }
           } catch {
+            console.warn("[tiered-warm]", JSON.stringify({ phase: "controller-refused", stage: warmStage }));
             notify(
               ctx,
-              "Warm preparation/source/processor/quality refused; no native fallback, no promotion, original hot retained. A processor request may already have been dispatched.",
+              `Warm 压缩失败（阶段：${warmStage}）。原始 hot 保留，不自动回退或重发；model-request 阶段可能已经发送请求。`,
               "warning",
             );
             return { cancel: true };
