@@ -1,3 +1,4 @@
+import { readWarmModelSettings } from "./warm-model-settings";
 import { ModelSessions } from "./memory/model-sessions.mjs";
 import { providerAccounts } from "./provider-accounts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -35,6 +36,7 @@ export async function createDesktopSessionServices(
   const tieredBudget: TieredBudgetController = new TieredBudgetController({
     adaptive: true,
     automatic: true,
+    defaultWarmTarget: () => readWarmModelSettings(agentDir).model,
     warmRunner: (options) => async (plan) =>
       createFlashWarmRunner({
         ...options,

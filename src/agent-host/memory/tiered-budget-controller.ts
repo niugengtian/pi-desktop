@@ -72,6 +72,7 @@ export class TieredBudgetController {
   };
   private warmMode = true;
   private warmTarget = "deepseek/deepseek-flash";
+  private readonly defaultWarmTarget: () => string;
   private warmCandidate?: { summaryHash: string; detailsHash: string; consentVersion: number };
   private readonly warmRunner?: WarmRunnerFactory;
   private readonly consentVersion: () => number;
@@ -85,6 +86,7 @@ export class TieredBudgetController {
 
   constructor({
     policy = TIERED_BUDGET,
+    defaultWarmTarget = () => "deepseek/deepseek-flash",
     warmRunner,
     consentVersion = () => 0,
     supports = supportsTieredModel,
@@ -92,12 +94,15 @@ export class TieredBudgetController {
     automatic = false,
   }: {
     policy?: BudgetPolicy;
+    defaultWarmTarget?: () => string;
     supports?: (model: SupportedModel) => boolean;
     adaptive?: boolean;
     automatic?: boolean;
     warmRunner?: WarmRunnerFactory;
     consentVersion?: () => number;
   } = {}) {
+    this.defaultWarmTarget = defaultWarmTarget;
+    this.warmTarget = defaultWarmTarget();
     this.policy = Object.freeze({ ...policy });
     this.adaptive = adaptive;
     this.automatic = automatic;
@@ -131,7 +136,7 @@ export class TieredBudgetController {
     this.webAbort?.abort();
     this.grant = undefined;
     this.warmMode = true;
-    this.warmTarget = "deepseek/deepseek-flash";
+    this.warmTarget = this.defaultWarmTarget();
     this.warmCandidate = undefined;
     this.compacting = false;
     this.compactSource = undefined;

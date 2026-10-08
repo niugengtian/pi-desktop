@@ -6,6 +6,35 @@ import type { ApiHandler } from "../../contract/rpc";
 import { RpcError } from "../../contract/types";
 import { DEFAULT_MEMORY_MODEL_SETTINGS, parseMemoryModelSettings } from "../../shared/memory-model";
 
+import { getSharedModelRuntime } from "../model-runtime";
+import { listWarmModels } from "../memory/tiered-warm-remote.mjs";
+import { readWarmModelSettings, saveWarmModelSettings } from "../warm-model-settings";
+
+export const warmModelHandlers = {
+  get: async () => {
+    const runtime = await getSharedModelRuntime();
+    const ids = await listWarmModels(runtime);
+    return {
+      ...readWarmModelSettings(),
+      models: ids.map((id) => {
+        const split = id.indexOf("/");
+        const model = runtime.getModel(id.slice(0, split), id.slice(split + 1));
+        return { id, name: model?.name ?? id };
+      }),
+    };
+  },
+  set: async (params: { model: string; expectedVersion: string }) => {
+    const runtime = await getSharedModelRuntime();
+    if (!(await listWarmModels(runtime)).includes(params.model))
+      throw new RpcError({ code: "BAD_REQUEST", message: "Warm model is unavailable or unsupported" });
+    if (readWarmModelSettings().version !== params.expectedVersion)
+      throw new RpcError({ code: "CONFLICT", message: "Warm settings changed; reload first" });
+    const result = saveWarmModelSettings(params.model, params.expectedVersion);
+    consentEpoch++;
+    return result;
+  },
+};
+
 let consentEpoch = 0;
 export const memoryModelConsentEpoch = () => consentEpoch;
 

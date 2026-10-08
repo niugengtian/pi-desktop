@@ -5,7 +5,7 @@
 import { modelCatalogHandlers } from "./handlers/model-catalog";
 import { providerAccounts } from "./provider-accounts";
 import { modelConfigHandlers } from "./handlers/models-config";
-import { memoryModelHandlers } from "./handlers/memory-model";
+import { memoryModelHandlers, warmModelHandlers } from "./handlers/memory-model";
 import { createAuthHandlers } from "./handlers/auth";
 import { createFileHandlers } from "./handlers/files";
 import { createWorktreeHandlers } from "./handlers/worktrees";
@@ -307,6 +307,8 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "modelsConfig.get": guard(modelConfigHandlers.get),
     "modelsConfig.set": guard(modelConfigHandlers.set),
     "modelsConfig.test": guard(modelConfigHandlers.test),
+    "warmModel.get": guard(warmModelHandlers.get),
+    "warmModel.set": guard(warmModelHandlers.set),
     "memoryModel.get": guard(memoryModelHandlers.get),
     "memoryModel.set": guard(memoryModelHandlers.set),
     "memoryModel.probe": guard(memoryModelHandlers.probe),

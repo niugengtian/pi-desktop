@@ -451,6 +451,11 @@ export interface Api {
     };
     result: TestResult;
   };
+  "warmModel.get": {
+    params: void;
+    result: { model: string; version: string; models: Array<{ id: string; name: string }> };
+  };
+  "warmModel.set": { params: { model: string; expectedVersion: string }; result: { model: string; version: string } };
   "memoryModel.get": { params: void; result: { settings: MemoryModelSettings; version: string } };
   "memoryModel.set": {
     params: { settings: MemoryModelSettings; expectedVersion: string };

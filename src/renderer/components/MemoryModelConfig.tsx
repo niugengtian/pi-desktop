@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { WarmModelConfig } from "./WarmModelConfig";
 import { call } from "@/lib/api-client";
 import type { MemoryModelSettings } from "@shared/memory-model";
 
@@ -76,6 +77,7 @@ export function MemoryModelConfig() {
   if (!settings) return <section style={{ padding: 24 }}>Loading memory settings… {message}</section>;
   return (
     <section style={{ padding: 24, overflowY: "auto", width: "100%", maxWidth: 760, lineHeight: 1.6 }}>
+      <WarmModelConfig />
       <h2 style={{ marginTop: 0 }}>Independent task memory</h2>
       <p>
         Task memory runs in the background after completed chat turns, independently of the active chat model. Summaries
