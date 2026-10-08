@@ -7,11 +7,19 @@ import {
   SUMMARY_WARM_INSTRUCTIONS,
 } from "./tiered-warm.mjs";
 import { createHash } from "node:crypto";
-import { planWireBudget } from "./tiered-budget.mjs";
+import { planWireBudget, estimateEnvelope } from "./tiered-budget.mjs";
+import { checkCodexDispatch } from "./tiered-codex-budget.mjs";
 
 export const WARM_TARGET = "deepseek/deepseek-flash @ https://api.deepseek.com (thinking disabled)";
 const DEFAULT_TARGET = "deepseek/deepseek-flash";
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+const CODEX_PROVIDERS = (provider) => provider === "openai-codex" || provider?.startsWith("desktop-account-");
+const isCodexModel = (model) =>
+  model?.api === "openai-codex-responses" &&
+  CODEX_PROVIDERS(model.provider) &&
+  model.baseUrl === CODEX_BASE_URL &&
+  model.thinkingLevelMap?.off === "none";
 
 function endpoint(model) {
   try {
@@ -35,20 +43,21 @@ export function supportsWarmModel(model, runtime) {
     typeof model.provider !== "string" ||
     typeof model.id !== "string" ||
     model.provider === "opencli-page" ||
-    model.api !== "openai-completions" ||
+    !["openai-completions", "openai-codex-responses"].includes(model.api) ||
     !Number.isSafeInteger(model.contextWindow) ||
     model.contextWindow < 8192 ||
     !Number.isSafeInteger(model.maxTokens) ||
     model.maxTokens <= 0 ||
     (model.samplingParams && Object.keys(model.samplingParams).length > 0) ||
-    !endpoint(model)
+    !(isCodexModel(model) || (model.api === "openai-completions" && endpoint(model)))
   )
     return false;
-  if (
-    runtime?.getRegisteredProviderConfig?.(model.provider)?.streamSimple ||
-    runtime?.getRegisteredNativeProvider?.(model.provider)
-  )
-    return false;
+  if (runtime?.getRegisteredProviderConfig?.(model.provider)?.streamSimple) return false;
+  if (runtime?.getRegisteredNativeProvider?.(model.provider) && !isCodexModel(model)) return false;
+  if (isCodexModel(model) && runtime?.getRegisteredNativeProvider) {
+    const native = runtime.getRegisteredNativeProvider(model.provider);
+    if (!native || !native.name?.startsWith("Codex · ")) return false;
+  }
   return true;
 }
 
@@ -81,6 +90,7 @@ export async function listWarmModels(runtime) {
 /** Transport injection exists for isolated tests, never a fallback or selectable endpoint. */
 export function createFlashWarmRunner({
   runtime,
+  accountStore,
   signal,
   authorized,
   target = DEFAULT_TARGET,
@@ -103,6 +113,46 @@ export function createFlashWarmRunner({
     let dispatched = false;
     const allowed = () => !signal?.aborted && authorized();
     let model;
+    let release = () => {};
+    let sentPayload;
+    let codexAccount;
+    let codexAccountId;
+    const validateCodex = (body, actual) => {
+      if (
+        !body ||
+        !allowed() ||
+        !isCodexModel(actual) ||
+        actual.provider !== model.provider ||
+        actual.id !== model.id ||
+        actual.baseUrl !== model.baseUrl ||
+        body.model !== model.id ||
+        body.store !== false ||
+        body.stream !== true ||
+        body.instructions !== instructions ||
+        !Array.isArray(body.input) ||
+        body.input.length !== 1 ||
+        body.input[0]?.role !== "user" ||
+        body.input[0]?.content?.length !== 1 ||
+        body.input[0].content[0]?.type !== "input_text" ||
+        body.input[0].content[0].text !== plan.payload ||
+        body.tools !== undefined ||
+        body.tool_choice !== "none" ||
+        body.parallel_tool_calls !== true ||
+        body.previous_response_id !== undefined ||
+        body.prompt_cache_key !== undefined ||
+        (body.reasoning && (body.reasoning.effort !== "none" || body.reasoning.summary !== undefined)) ||
+        body.max_output_tokens !== undefined ||
+        body.samplingParams !== undefined ||
+        body.service_tier !== undefined ||
+        body.temperature !== undefined ||
+        body.text?.format !== undefined ||
+        body.include?.length !== 1 ||
+        body.include[0] !== "reasoning.encrypted_content" ||
+        (body.text?.verbosity !== undefined && body.text.verbosity !== "low") ||
+        estimateEnvelope(body, 1).estimatedTokens + outputCap + 1024 > actual.contextWindow
+      )
+        throw new Error("Codex warm payload refused");
+    };
     const validate = (body, actual) => {
       if (
         !body ||
@@ -150,7 +200,10 @@ export function createFlashWarmRunner({
       const divider = target.indexOf("/");
       if (divider <= 0 || divider === target.length - 1) throw new Error("Warm target refused");
       model = runtime.getModel(target.slice(0, divider), target.slice(divider + 1));
-      const destination = model && endpoint(model);
+      const codex = isCodexModel(model);
+      const destination = codex
+        ? { origin: "https://chatgpt.com", pathname: "/backend-api/codex/responses" }
+        : model && endpoint(model);
       if (
         !allowed() ||
         !supportsWarmModel(model, runtime) ||
@@ -159,6 +212,14 @@ export function createFlashWarmRunner({
         Buffer.byteLength(plan.payload) > (large ? WARM_SEGMENT_BYTES : 12000)
       )
         throw new Error("Warm target refused");
+      if (codex) {
+        if (!accountStore || !supportsWarmModel(model, runtime)) throw new Error("Codex account routing missing");
+        codexAccount = accountStore.find(model.provider);
+        if (!codexAccount || codexAccount.kind !== "codex" || codexAccount.removed)
+          throw new Error("Codex account unavailable");
+        codexAccountId = codexAccount.id;
+        release = accountStore.acquire(model.provider);
+      }
       const result = await runtime.completeSimple(
         model,
         {
@@ -175,12 +236,14 @@ export function createFlashWarmRunner({
           reasoning: "off",
           toolChoice: "none",
           cacheRetention: "none",
+          ...(codex ? { transport: "sse" } : {}),
           onPayload: (body, actual) => {
-            // The SDK may apply credential-specific routing overrides. Compare the actual
-            // request model and origin with the approved catalog model before dispatch.
+            // Credential-specific routing overrides cannot alter the approved endpoint.
             if (actual.baseUrl !== model.baseUrl) throw new Error("Warm endpoint changed");
-            if (summaryMode) body.response_format = { type: "json_object" };
-            validate(body, actual);
+            if (summaryMode && !codex) body.response_format = { type: "json_object" };
+            if (codex) validateCodex(body, actual);
+            else validate(body, actual);
+            if (codex) sentPayload = JSON.stringify(body);
           },
           fetch: async (url, options) => {
             let actual;
@@ -192,6 +255,11 @@ export function createFlashWarmRunner({
             if (
               !allowed() ||
               dispatched ||
+              (codex &&
+                (accountStore.find(model.provider)?.id !== codexAccountId ||
+                  accountStore.find(model.provider)?.removed ||
+                  runtime.getModel(model.provider, model.id)?.baseUrl !== model.baseUrl ||
+                  !supportsWarmModel(runtime.getModel(model.provider, model.id), runtime))) ||
               actual.origin !== destination.origin ||
               actual.pathname !== destination.pathname ||
               actual.username ||
@@ -201,8 +269,14 @@ export function createFlashWarmRunner({
               options?.method !== "POST"
             )
               throw new Error("Warm dispatch refused");
-            const wire = typeof options.body === "string" ? JSON.parse(options.body) : null;
-            validate(wire, model);
+            if (codex) {
+              if (!sentPayload) throw new Error("Codex warm payload was not reviewed");
+              checkCodexDispatch(url, options.body, model, sentPayload);
+              validateCodex(JSON.parse(sentPayload), model);
+            } else {
+              const wire = typeof options.body === "string" ? JSON.parse(options.body) : null;
+              validate(wire, model);
+            }
             dispatched = true;
             stage = "transport";
             onEvent({
@@ -254,6 +328,8 @@ export function createFlashWarmRunner({
       throw new Error(
         `Warm incremental processing failed (${stage}; HTTP ${status ?? "unknown"}; stop ${stopReason ?? "unknown"}; output ${output ?? "unknown"}); no retry, native-summary or provider fallback.`,
       );
+    } finally {
+      release();
     }
   };
 }

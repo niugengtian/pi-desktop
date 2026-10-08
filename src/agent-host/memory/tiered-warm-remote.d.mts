@@ -1,4 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ProviderAccounts } from "../provider-accounts";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { WarmPlan } from "./tiered-warm.mjs";
 export const WARM_TARGET: string;
@@ -15,6 +16,7 @@ export function supportsWarmModel(model: unknown, runtime?: ModelRuntime): boole
 export function listWarmModels(runtime: ModelRuntime): Promise<string[]>;
 export function createFlashWarmRunner(options: {
   runtime: ModelRuntime;
+  accountStore?: ProviderAccounts;
   signal?: AbortSignal;
   authorized: () => boolean;
   target?: string;

@@ -409,7 +409,16 @@ export class ProviderAccounts {
           ),
         streamSimple: (model, context, options) =>
           accountStream(
-            () => original.streamSimple({ ...model, provider: baseProvider(account.kind) }, context, options),
+            () =>
+              original.streamSimple({ ...model, provider: baseProvider(account.kind) }, context, {
+                ...options,
+                ...(options?.onPayload
+                  ? {
+                      onPayload: async (body, actual) =>
+                        options.onPayload?.(body, { ...actual, provider: account.provider }),
+                    }
+                  : {}),
+              }),
             account.provider,
             model,
             () => this.acquire(account.provider),

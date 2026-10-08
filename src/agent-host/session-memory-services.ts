@@ -39,6 +39,7 @@ export async function createDesktopSessionServices(
       createFlashWarmRunner({
         ...options,
         runtime: await getRemoteMemoryRuntime(),
+        accountStore: providerAccounts(agentDir),
         onEvent: (event) => {
           console.info("[tiered-warm]", JSON.stringify(event));
           const auditPath = process.env.PI_TIERED_TEST_AUDIT_PATH;

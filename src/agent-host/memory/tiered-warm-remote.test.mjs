@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { importTestBundle } from "#test-bundle";
+import { zstdDecompressSync } from "node:zlib";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createFlashWarmRunner, listWarmModels, supportsWarmModel } from "./tiered-warm-remote.mjs";
 const model = {
   provider: "deepseek",
@@ -10,6 +16,11 @@ const model = {
   maxTokens: 2048,
 };
 const plan = { payload: JSON.stringify({ sourceHash: "fictional", records: [] }) };
+const { ProviderAccounts } = await importTestBundle("warm-provider-accounts", {
+  packages: "external",
+  absWorkingDir: path.resolve(import.meta.dirname, "../../.."),
+  entryPoints: [path.resolve(import.meta.dirname, "../provider-accounts.ts")],
+});
 function runtime({
   wire = (value) => value,
   url = "https://api.deepseek.com/chat/completions",
@@ -139,6 +150,146 @@ test("selected API or local Ollama endpoint and final body are checked without s
       /no retry/,
     );
   }
+});
+
+test("Codex account warm candidates require official route, explicit off support and isolated account registration", async () => {
+  const first = {
+    ...model,
+    provider: "desktop-account-first",
+    id: "gpt-6-sol",
+    api: "openai-codex-responses",
+    baseUrl: "https://chatgpt.com/backend-api",
+    thinkingLevelMap: { off: "none" },
+  };
+  const second = { ...first, provider: "desktop-account-second" };
+  const registered = { getRegisteredNativeProvider: (id) => ({ name: `Codex · ${id}` }) };
+  assert.equal(supportsWarmModel(first, registered), true);
+  assert.equal(supportsWarmModel(second, registered), true);
+  for (const invalid of [
+    { ...first, baseUrl: "https://example.test/backend-api" },
+    { ...first, thinkingLevelMap: { off: null } },
+    { ...first, provider: "custom" },
+  ])
+    assert.equal(supportsWarmModel(invalid, registered), false);
+  assert.equal(supportsWarmModel(first, { getRegisteredNativeProvider: () => ({ name: "Impostor" }) }), false);
+  const registry = {
+    ...registered,
+    getModels: () => [first, second],
+    getAvailable: async (id) => [first, second].filter((m) => m.provider === id),
+  };
+  assert.deepEqual(await listWarmModels(registry), [
+    "desktop-account-first/gpt-6-sol",
+    "desktop-account-second/gpt-6-sol",
+  ]);
+});
+
+test("two Codex accounts send warm through their own scoped OAuth tokens and never fall back", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "pi-warm-codex-"));
+  const agent = path.join(root, "agent");
+  mkdirSync(agent);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const accounts = new ProviderAccounts(agent);
+  const rows = [accounts.add("codex", "Personal"), accounts.add("codex", "Company")];
+  const claim = "https://api.openai.com/auth";
+  const token = (id) =>
+    `x.${Buffer.from(JSON.stringify({ [claim]: { chatgpt_account_id: id } })).toString("base64url")}.signature`;
+  for (const [index, row] of rows.entries()) {
+    writeFileSync(
+      path.join(agent, "accounts", row.id, "auth.json"),
+      JSON.stringify({
+        "openai-codex": {
+          type: "oauth",
+          access: token(index === 0 ? "personal-id" : "company-id"),
+          refresh: "fictional-refresh",
+          expires: Date.now() + 3_600_000,
+        },
+      }),
+    );
+  }
+  const runtime = await ModelRuntime.create({
+    modelsPath: null,
+    authPath: path.join(agent, "empty.json"),
+    allowModelNetwork: false,
+  });
+  await accounts.install(runtime);
+  const calls = [];
+  const transport = async (url, options) => {
+    const bytes = typeof options.body === "string" ? Buffer.from(options.body) : Buffer.from(options.body);
+    const body = JSON.parse(
+      (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd])) ? zstdDecompressSync(bytes) : bytes).toString(
+        "utf8",
+      ),
+    );
+    const header = new globalThis.Headers(options.headers).get("authorization");
+    calls.push({
+      url: String(url),
+      model: body.model,
+      account:
+        header === `Bearer ${token("personal-id")}`
+          ? "personal"
+          : header === `Bearer ${token("company-id")}`
+            ? "company"
+            : "unknown",
+      body,
+    });
+    const message = {
+      id: `msg-${calls.length}`,
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "{}", annotations: [] }],
+    };
+    const events = [
+      { type: "response.created", response: { id: `resp-${calls.length}`, status: "in_progress" } },
+      { type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
+      { type: "response.output_item.done", output_index: 0, item: message },
+      {
+        type: "response.completed",
+        response: {
+          id: `resp-${calls.length}`,
+          status: "completed",
+          output: [message],
+          usage: { input_tokens: 10, output_tokens: 2, output_tokens_details: { reasoning_tokens: 0 } },
+        },
+      },
+    ];
+    return new globalThis.Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+  const targets = rows.map((row) => `${row.provider}/gpt-6-sol`);
+  for (const target of targets) {
+    const reply = await createFlashWarmRunner({
+      runtime,
+      accountStore: accounts,
+      target,
+      authorized: () => true,
+      transport,
+    })(plan);
+    assert.equal(reply.answer, "{}");
+  }
+  assert.deepEqual(
+    calls.map(({ account }) => account),
+    ["personal", "company"],
+  );
+  for (const call of calls) {
+    assert.equal(call.url, "https://chatgpt.com/backend-api/codex/responses");
+    assert.equal(call.body.store, false);
+    assert.equal(call.body.tool_choice, "none");
+    assert.equal(call.body.reasoning?.effort, "none");
+    assert.equal(call.body.prompt_cache_key, undefined);
+    assert.equal(call.body.input.length, 1);
+    assert.equal(call.body.input[0].content[0].text, plan.payload);
+  }
+  const company = rows[1];
+  writeFileSync(path.join(agent, "accounts", company.id, "auth.json"), "{}");
+  await assert.rejects(
+    createFlashWarmRunner({ runtime, accountStore: accounts, target: targets[1], authorized: () => true, transport })(
+      plan,
+    ),
+    /no retry/,
+  );
+  assert.equal(calls.length, 2, "Missing company credentials must not dispatch or fall back to personal");
 });
 
 test("unapproved/custom implementations, revoked results and provider errors do not grant source or leak diagnostics", async () => {
